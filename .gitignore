@@ -1,0 +1,18 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build artifacts
+/bin/
+/dist/
+/tmp/
+argus-app
+argus-app.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local debug
+*.log
