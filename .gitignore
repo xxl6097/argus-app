@@ -15,3 +15,6 @@ Thumbs.db
 
 # Local debug
 *.log
+
+# Image backups left by docs/screenshots/mask_macs.py
+*.bak

@@ -48,6 +48,9 @@ import (
 //go:embed assets/dashboard.html
 var dashboardHTML []byte
 
+//go:embed assets/favicon.ico
+var faviconICO []byte
+
 // Defaults for the offline device cache. Override via Option at
 // construction time (see NewServer).
 const (
@@ -256,6 +259,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 		s.writeAuth = defaultLANAuth
 	}
 	s.mux.HandleFunc("/", s.handleIndex)
+	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/api/devices", s.handleDevices)
 	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/aliases", s.handleAliases)
@@ -387,6 +391,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// so a redeploy is required to change it. 5-min cache is fine.
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	_, _ = w.Write(dashboardHTML)
+}
+
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/x-icon")
+	// Embedded asset never changes between rebuilds; cache for a day.
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(faviconICO)
 }
 
 // deviceRow is the wire format for /api/devices. Fields mirror the
