@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: build + vet + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: go mod tidy (check drift)
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: gofmt
+        run: |
+          fmt_out=$(gofmt -l .)
+          if [ -n "$fmt_out" ]; then
+            echo "::error::gofmt finds issues in:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: build (native)
+        run: go build -v ./...
+
+  cross-build:
+    name: cross-build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm,   goarm: "7" }
+          - { goos: linux, goarch: mips,  gomips: softfloat }
+          - { goos: linux, goarch: mipsle, gomips: softfloat }
+          - { goos: linux, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+        run: |
+          suffix="${GOOS}_${GOARCH}"
+          [ -n "$GOARM" ] && suffix="${suffix}v${GOARM}"
+          [ -n "$GOMIPS" ] && suffix="${suffix}_${GOMIPS}"
+          out="argus-app_${suffix}"
+          go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/app
+          ls -lh "$out"

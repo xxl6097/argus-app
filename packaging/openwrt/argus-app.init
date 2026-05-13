@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+# argus-app — WiFi 考勤 / 工时统计 daemon
+# OpenWrt procd init script. Place this file at /etc/init.d/argus-app
+# on the router, chmod +x, then:
+#     /etc/init.d/argus-app enable
+#     /etc/init.d/argus-app start
+
+USE_PROCD=1
+
+# Run early enough that the network + ubus are up. Stop before them
+# on shutdown so the process doesn't race with watcher disconnects.
+START=95
+STOP=10
+
+PROG=/usr/bin/argus-app
+LISTEN="${LISTEN:-0.0.0.0:9099}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/argusd}"
+
+start_service() {
+    [ -x "$PROG" ] || {
+        echo "argus-app: $PROG not found or not executable" >&2
+        return 1
+    }
+
+    procd_open_instance
+    procd_set_param command "$PROG" \
+        -listen "$LISTEN" \
+        -aliases "$CONFIG_DIR/aliases.json" \
+        -settings "$CONFIG_DIR/settings.json" \
+        -overrides "$CONFIG_DIR/overrides.json" \
+        -notifications "$CONFIG_DIR/notifications.json" \
+        -holidays "$CONFIG_DIR/holidays.json" \
+        -holidays-system "$CONFIG_DIR/holidays_system.json" \
+        -history-dir "$CONFIG_DIR/history"
+    # stdout/stderr to the system log (visible via `logread` / `logread -f`)
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    # Auto-restart with exponential backoff if it dies.
+    procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+    # Reload Watcher on SIGHUP (preserves known/cooldown state).
+    procd_set_param reload_signal HUP
+    # Writable pid/config directory.
+    [ -d "$CONFIG_DIR" ] || mkdir -p "$CONFIG_DIR"
+    procd_close_instance
+}
+
+reload_service() {
+    stop
+    start
+}
+
+service_triggers() {
+    # Watch this init file itself so `service argus-app reload` works
+    # after the user edits it.
+    procd_add_reload_trigger "argus-app"
+}

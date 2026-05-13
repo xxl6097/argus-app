@@ -40,7 +40,16 @@ import (
 	"github.com/xxl6097/argusd/argusmetrics"
 )
 
+// Version info populated by -ldflags at release time. When building
+// locally via `go build`, these default to "dev" / "" / "".
+var (
+	Version = "dev"
+	Commit  = ""
+	Date    = ""
+)
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
 	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
 	aliasesPath := flag.String("aliases", "/etc/argusd/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
 	settingsPath := flag.String("settings", "/etc/argusd/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
@@ -52,7 +61,13 @@ func main() {
 	historyDir := flag.String("history-dir", "/etc/argusd/history", "directory for per-MAC online/offline history; empty disables history + worktime")
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Printf("argus-app %s (commit %s, built %s)\n", Version, Commit, Date)
+		return
+	}
+
 	log.SetFlags(log.LstdFlags)
+	log.Printf("argus-app %s (commit %s, built %s)", Version, Commit, Date)
 	owrt.SetupLocalTimezone()
 
 	// structured logger: slog.TextHandler → stderr (人可读, 同时可被 systemd 采集)

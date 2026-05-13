@@ -352,4 +352,3 @@ func (s *OverrideStore) persistLocked() error {
 	}
 	return os.Rename(tmp, s.path)
 }
-

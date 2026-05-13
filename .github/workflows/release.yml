@@ -1,0 +1,106 @@
+name: release
+
+# Triggered by pushing a semver tag, e.g. `git tag v1.2.3 && git push --tags`.
+# Cross-compiles binaries for the architectures most OpenWrt routers run on
+# (plus amd64 for x86 soft-routers), bundles each with the init script and
+# packaging README, then publishes a GitHub Release with the archives + a
+# SHA256SUMS file.
+on:
+  push:
+    tags: [ 'v*.*.*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) }}${{ matrix.gomips && format('-{0}', matrix.gomips) }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm,    goarm: "7" }
+          - { goos: linux, goarch: mips,   gomips: softfloat }
+          - { goos: linux, goarch: mipsle, gomips: softfloat }
+          - { goos: linux, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: derive metadata
+        id: meta
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          commit=$(git rev-parse --short HEAD)
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          suffix="${{ matrix.goos }}_${{ matrix.goarch }}"
+          [ -n "${{ matrix.goarm }}" ] && suffix="${suffix}v${{ matrix.goarm }}"
+          [ -n "${{ matrix.gomips }}" ] && suffix="${suffix}_${{ matrix.gomips }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
+
+      - name: build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+        run: |
+          mkdir -p dist/argus-app
+          go build -trimpath \
+            -ldflags="-s -w \
+              -X main.Version=${{ steps.meta.outputs.tag }} \
+              -X main.Commit=${{ steps.meta.outputs.commit }} \
+              -X main.Date=${{ steps.meta.outputs.date }}" \
+            -o dist/argus-app/argus-app \
+            ./cmd/app
+          cp LICENSE README.md dist/argus-app/
+          cp -r packaging dist/argus-app/
+          ls -lh dist/argus-app/
+
+      - name: archive
+        run: |
+          tar -czf "argus-app_${{ steps.meta.outputs.tag }}_${{ steps.meta.outputs.suffix }}.tar.gz" \
+            -C dist argus-app
+          ls -lh ./*.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: argus-app_${{ steps.meta.outputs.suffix }}
+          path: argus-app_*.tar.gz
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true

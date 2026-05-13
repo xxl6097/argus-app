@@ -31,8 +31,8 @@ const historyCompactEvery = 2000
 // intervals. Device-identifying fields (hostname, ip) are recorded
 // for diagnostic display but are otherwise not load-bearing.
 type HistoryEntry struct {
-	TimeMs   int64  `json:"t"`              // unix millis
-	Kind     string `json:"k"`              // "ONLINE" | "OFFLINE"
+	TimeMs   int64  `json:"t"` // unix millis
+	Kind     string `json:"k"` // "ONLINE" | "OFFLINE"
 	IP       string `json:"ip,omitempty"`
 	Hostname string `json:"host,omitempty"`
 }
@@ -277,17 +277,17 @@ func readEntries(path string, from, to time.Time) ([]HistoryEntry, error) {
 //
 // StandardSecs is the configured workday length (end − start in minutes).
 type WorktimeReport struct {
-	MAC          string     `json:"mac"`
-	Date         string     `json:"date"`  // YYYY-MM-DD
-	StartHHMM    string     `json:"start"` // e.g. "09:00"
-	EndHHMM      string     `json:"end"`   // e.g. "18:30"
-	StandardSecs int64      `json:"standard_secs"`
-	PresentSecs  int64      `json:"present_secs"`
-	EarlyOTSecs  int64      `json:"early_ot_secs"`
-	LateOTSecs   int64      `json:"late_ot_secs"`
-	OvertimeSecs int64      `json:"overtime_secs"`
-	FirstSeenMs  int64      `json:"first_seen_ms,omitempty"`
-	LastSeenMs   int64      `json:"last_seen_ms,omitempty"`
+	MAC             string     `json:"mac"`
+	Date            string     `json:"date"`  // YYYY-MM-DD
+	StartHHMM       string     `json:"start"` // e.g. "09:00"
+	EndHHMM         string     `json:"end"`   // e.g. "18:30"
+	StandardSecs    int64      `json:"standard_secs"`
+	PresentSecs     int64      `json:"present_secs"`
+	EarlyOTSecs     int64      `json:"early_ot_secs"`
+	LateOTSecs      int64      `json:"late_ot_secs"`
+	OvertimeSecs    int64      `json:"overtime_secs"`
+	FirstSeenMs     int64      `json:"first_seen_ms,omitempty"`
+	LastSeenMs      int64      `json:"last_seen_ms,omitempty"`
 	Intervals       []Interval `json:"intervals"`
 	OpenAtEnd       bool       `json:"open_at_end"`                // true if still online at query time
 	Manual          bool       `json:"manual,omitempty"`           // true if an override was applied
@@ -536,22 +536,22 @@ func hhmmOnDay(day time.Time, hhmm string, defaultMin int) time.Time {
 // Zero-present days are omitted from Days to keep the payload tight
 // (the UI only cares about days the device actually showed up).
 type MonthlyReport struct {
-	MAC          string        `json:"mac"`
-	Month        string        `json:"month"` // "YYYY-MM"
-	StartHHMM    string        `json:"start"`
-	EndHHMM      string        `json:"end"`
-	PresentSecs  int64         `json:"present_secs"`
-	OvertimeSecs int64         `json:"overtime_secs"`
-	EarlyOTSecs  int64         `json:"early_ot_secs"`
-	LateOTSecs   int64         `json:"late_ot_secs"`
-	WorkedDays        int           `json:"worked_days"`
-	OTDays            int           `json:"ot_days"`            // # of weekend/holiday OT days with attendance
-	LateDays          int           `json:"late_days"`
-	MissedInDays      int           `json:"missed_in_days"`
-	EarlyLeaveDays    int           `json:"early_leave_days"`
-	AvgDailyOTSecs    int64         `json:"avg_daily_ot_secs"`  // OvertimeSecs / WorkedDays
-	AvgWeeklyOTSecs   int64         `json:"avg_weekly_ot_secs"` // OvertimeSecs * 7 / WorkedDays (prorated)
-	Days              []DayWorktime `json:"days"`
+	MAC             string        `json:"mac"`
+	Month           string        `json:"month"` // "YYYY-MM"
+	StartHHMM       string        `json:"start"`
+	EndHHMM         string        `json:"end"`
+	PresentSecs     int64         `json:"present_secs"`
+	OvertimeSecs    int64         `json:"overtime_secs"`
+	EarlyOTSecs     int64         `json:"early_ot_secs"`
+	LateOTSecs      int64         `json:"late_ot_secs"`
+	WorkedDays      int           `json:"worked_days"`
+	OTDays          int           `json:"ot_days"` // # of weekend/holiday OT days with attendance
+	LateDays        int           `json:"late_days"`
+	MissedInDays    int           `json:"missed_in_days"`
+	EarlyLeaveDays  int           `json:"early_leave_days"`
+	AvgDailyOTSecs  int64         `json:"avg_daily_ot_secs"`  // OvertimeSecs / WorkedDays
+	AvgWeeklyOTSecs int64         `json:"avg_weekly_ot_secs"` // OvertimeSecs * 7 / WorkedDays (prorated)
+	Days            []DayWorktime `json:"days"`
 }
 
 // DayWorktime is a single-day row in MonthlyReport.Days.

@@ -1,11 +1,50 @@
 # argus-app
 
+[![CI](https://github.com/xxl6097/argus-app/actions/workflows/ci.yml/badge.svg)](https://github.com/xxl6097/argus-app/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/xxl6097/argus-app?include_prereleases&sort=semver)](https://github.com/xxl6097/argus-app/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/xxl6097/argus-app)](go.mod)
+
 基于 [argusd](https://github.com/xxl6097/argusd) 的 OpenWrt 设备监控工具，
 在原有 WiFi 上下线探测能力之上扩展了一套面向**个人考勤 / 加班统计**的 Web 仪表板。
 路由器把 WiFi 上线时间当作"打卡"，离线当作"下班"，自动算出每天的在岗时长、加班时长、迟到 / 早退状态，
 按月汇总并推送到 Webhook / ntfy。
 
 > 名字虽叫 `argus-app`，仪表板上的对外标题已经改成了 **WiFi 考勤 · 工时统计**。
+
+## 界面截图
+
+<div align="center">
+  <img src="docs/screenshots/dashboard-overview.png" alt="主页全景" width="780">
+  <br>
+  <img src="docs/screenshots/worktime-tab.png" alt="工作时长" width="780">
+  <br>
+  <img src="docs/screenshots/monthly-stats.png" alt="月统计" width="780">
+</div>
+
+> 截图缺失？在 [`docs/screenshots/`](docs/screenshots/README.md) 里看命名规范并提交你的实机截图。
+
+## 快速开始
+
+### 方式 A：下载预编译二进制（推荐）
+
+到 [Releases](https://github.com/xxl6097/argus-app/releases) 下载对应架构的压缩包，
+里面包含 `argus-app` 可执行文件 + OpenWrt init 脚本 + 部署文档：
+
+```bash
+# 以 aarch64（MT7981/高通 etc.）为例
+wget https://github.com/xxl6097/argus-app/releases/latest/download/argus-app_vX.Y.Z_linux_arm64.tar.gz
+tar xzf argus-app_vX.Y.Z_linux_arm64.tar.gz
+scp argus-app/argus-app root@192.168.1.1:/usr/bin/argus-app
+scp argus-app/packaging/openwrt/argus-app.init root@192.168.1.1:/etc/init.d/argus-app
+ssh root@192.168.1.1 'chmod +x /usr/bin/argus-app /etc/init.d/argus-app && /etc/init.d/argus-app enable && /etc/init.d/argus-app start'
+```
+
+浏览器访问 `http://192.168.1.1:9099` 即可。完整步骤见 [packaging/openwrt/README.md](packaging/openwrt/README.md)。
+
+### 方式 B：从源码构建
+
+见下面 [安装与部署](#安装与部署) 一节的 `buildAndUpRun.sh` 脚本。
 
 ## 设计目标
 
@@ -64,6 +103,7 @@ argus-app/
 按日 (`ComputeWorktime`) / 按月 (`MonthlyReport`) 两套算法。
 
 **日级输出字段**：
+
 | 字段 | 含义 |
 |---|---|
 | `present_secs` | 在岗时长 = 末次下线 − min(首次上线, 标准上班) |
@@ -78,6 +118,7 @@ argus-app/
 | `missing_out` | 仅有上班记录、没有下班 |
 
 **日子类型与口径**：
+
 | 类型 | 触发 | 加班口径 | 迟到/早退判定 |
 |---|---|---|---|
 | workday | 工作日（默认） | 早到 + 晚走 | ✅ |
