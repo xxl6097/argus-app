@@ -2,7 +2,7 @@
 .idea/
 .vscode/
 *.iml
-
+buildAndUpRun.sh
 # Build artifacts
 /bin/
 /dist/

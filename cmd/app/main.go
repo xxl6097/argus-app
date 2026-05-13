@@ -45,7 +45,10 @@ func main() {
 	aliasesPath := flag.String("aliases", "/etc/argusd/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
 	settingsPath := flag.String("settings", "/etc/argusd/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
 	overridesPath := flag.String("overrides", "/etc/argusd/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
-	holidaysPath := flag.String("holidays", "/etc/argusd/holidays.json", "path to legal holiday / 调休 workday calendar; empty disables OT-day detection")
+	notifyPath := flag.String("notifications", "/etc/argusd/notifications.json", "path to per-device webhook/ntfy configs; empty disables notifications tab")
+	holidaysPath := flag.String("holidays", "/etc/argusd/holidays.json", "path to manual legal holiday / 调休 workday calendar; empty disables manual entries")
+	holidaysSystemPath := flag.String("holidays-system", "/etc/argusd/holidays_system.json", "path to auto-fetched (timor.tech) holiday cache; empty disables auto-refresh")
+	holidaysYearsAhead := flag.Int("holidays-years", 10, "how many years ahead to fetch on each refresh (current year + N-1 future). The State Council typically publishes only the current year, so unpublished years silently no-op.")
 	historyDir := flag.String("history-dir", "/etc/argusd/history", "directory for per-MAC online/offline history; empty disables history + worktime")
 	flag.Parse()
 
@@ -120,11 +123,27 @@ func main() {
 			opts = append(opts, web.WithOverrides(web.NewOverrideStore(*overridesPath, aliasStore)))
 			log.Printf("手动工时编辑已启用 (file=%s, key=alias)", *overridesPath)
 		}
+		if *notifyPath != "" {
+			notifyStore := web.NewNotifyStore(*notifyPath, aliasStore)
+			notifier := web.NewNotifier(notifyStore, nil)
+			opts = append(opts, web.WithNotifications(notifyStore, notifier))
+			log.Printf("通知设置已启用 (file=%s, webhook+ntfy)", *notifyPath)
+		}
 		if *holidaysPath != "" {
-			hs := web.NewHolidayStore(*holidaysPath)
+			hs := web.NewHolidayStoreWithSystem(*holidaysPath, *holidaysSystemPath)
+			// Offline / first-boot safety net: if the manual layer is
+			// empty AND we can't reach the network yet, at least seed
+			// the current year from the built-in 2026 table. Harmless
+			// when online — the API layer shadows these anyway.
 			hs.SeedDefaultsIfEmpty(web.CN2026Holidays())
 			opts = append(opts, web.WithHolidays(hs))
-			log.Printf("法定节假日日历已启用 (file=%s)", *holidaysPath)
+			if *holidaysSystemPath != "" {
+				hs.StartAutoRefresh(*holidaysYearsAhead)
+				log.Printf("法定节假日已启用 (manual=%s, system=%s, years=%d, refresh=03:00 daily)",
+					*holidaysPath, *holidaysSystemPath, *holidaysYearsAhead)
+			} else {
+				log.Printf("法定节假日已启用 (manual=%s, auto-refresh disabled)", *holidaysPath)
+			}
 		}
 		if *historyDir != "" {
 			opts = append(opts, web.WithHistory(web.NewHistoryStore(*historyDir)))
@@ -168,6 +187,11 @@ func main() {
 		for _, d := range devices {
 			webServer.History().SeedBaseline(d, now)
 		}
+	}
+	// Alias-keyed notify entries need the watcher's known set to
+	// resolve to MACs; trigger subscriptions now that it's populated.
+	if webServer != nil {
+		webServer.RefreshNotifySubs()
 	}
 
 	// 启动外部系统日志监听用于展示 (库内部的 syslog 已自动纳入离线判断)

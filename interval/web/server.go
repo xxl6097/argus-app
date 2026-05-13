@@ -33,8 +33,10 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -140,6 +142,16 @@ func WithHolidays(h *HolidayStore) Option {
 	return func(s *Server) { s.holidays = h }
 }
 
+// WithNotifications attaches a per-device notification store. When
+// set, OnEvent fires webhooks and ntfy publishes, and /api/notifications
+// / /api/notifications/messages endpoints are served.
+func WithNotifications(store *NotifyStore, notifier *Notifier) Option {
+	return func(s *Server) {
+		s.notifyStore = store
+		s.notifier = notifier
+	}
+}
+
 // Server is an http.Handler that serves the argus dashboard + API.
 // Embed it in your own http.ServeMux or pass it directly to
 // http.ListenAndServe.
@@ -191,6 +203,11 @@ type Server struct {
 	// the worktime compute can special-case them as OT days.
 	// nil = weekday/weekend heuristic only.
 	holidays *HolidayStore
+
+	// notifyStore is the per-device webhook + ntfy config store.
+	// notifier dispatches events to those destinations.
+	notifyStore *NotifyStore
+	notifier    *Notifier
 
 	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
 	// means the default LAN policy (loopback + RFC1918).
@@ -251,6 +268,9 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s.mux.HandleFunc("/api/worktime/override", s.handleWorktimeOverride)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/holidays", s.handleHolidays)
+	s.mux.HandleFunc("/api/notifications", s.handleNotifications)
+	s.mux.HandleFunc("/api/notifications/messages", s.handleNotificationMessages)
+	s.mux.HandleFunc("/api/notifications/test", s.handleNotificationTest)
 	return s
 }
 
@@ -258,6 +278,19 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 // is disabled. Useful for embedders that want to seed baseline
 // ONLINE entries on startup.
 func (s *Server) History() *HistoryStore { return s.history }
+
+// RefreshNotifySubs rebuilds ntfy subscriptions. Exposed so the
+// process owner can trigger it once after the watcher has populated
+// its known set (alias-keyed configs need that to resolve).
+func (s *Server) RefreshNotifySubs() { s.refreshNotifySubs() }
+
+// StopNotifier cancels all ntfy subscribers. Safe to call when
+// notifications are disabled.
+func (s *Server) StopNotifier() {
+	if s.notifier != nil {
+		s.notifier.StopSubscriptions()
+	}
+}
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +317,10 @@ func (s *Server) OnEvent(e argus.Event) {
 	if s.history != nil {
 		s.history.Record(e)
 	}
+	// Dispatch to webhook/ntfy with rich markdown context. We do this
+	// here (not inside Notifier) because the context — alias, punch
+	// membership, worktime stats — lives in Server-level stores.
+	s.dispatchNotify(e)
 
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
@@ -373,23 +410,21 @@ type deviceRow struct {
 	Status      string `json:"status"`                  // "online" | "offline" (since v0.13.3)
 	OfflineAtMs int64  `json:"offline_at_ms,omitempty"` // set when status=="offline"
 	Alias       string `json:"alias,omitempty"`         // user-defined name (since v0.14.0)
-	IsMe        bool   `json:"is_me,omitempty"`         // tagged as "my phone" for worktime
+	IsMe        bool   `json:"is_me,omitempty"`         // tagged as 打卡设备 (workflow statistics)
 }
 
 // applyAlias annotates the row with a user-defined friendly name when
 // one is configured. Returns the row unchanged if no alias store is
 // attached or the MAC has no entry. Also tags the row as IsMe when
-// the MAC matches the currently-selected "me" MAC in settings.
+// the MAC appears in the 打卡设备 set in settings.
 func (s *Server) applyAlias(row deviceRow) deviceRow {
 	if s.aliases != nil {
 		if name := s.aliases.Lookup(row.MAC); name != "" {
 			row.Alias = name
 		}
 	}
-	if s.settings != nil {
-		if me := s.settings.Get().MeMAC; me != "" && me == normalizeMAC(row.MAC) {
-			row.IsMe = true
-		}
+	if s.settings != nil && s.settings.IsPunch(row.MAC) {
+		row.IsMe = true
 	}
 	return row
 }
@@ -497,13 +532,14 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 // fields are part of the Stable wire shape (see STABILITY.md).
 func (s *Server) capabilities() map[string]bool {
 	return map[string]bool{
-		"aliases":   s.aliases != nil,
-		"dhcp":      s.dhcp != nil,
-		"history":   s.history != nil,
-		"worktime":  s.history != nil && s.settings != nil,
-		"overrides": s.overrides != nil,
-		"settings":  s.settings != nil,
-		"holidays":  s.holidays != nil,
+		"aliases":       s.aliases != nil,
+		"dhcp":          s.dhcp != nil,
+		"history":       s.history != nil,
+		"worktime":      s.history != nil && s.settings != nil,
+		"overrides":     s.overrides != nil,
+		"settings":      s.settings != nil,
+		"holidays":      s.holidays != nil,
+		"notifications": s.notifyStore != nil,
 	}
 }
 
@@ -1018,11 +1054,24 @@ func (s *Server) handleWorktimeOverride(w http.ResponseWriter, r *http.Request) 
 
 // handleSettings multiplexes GET / POST / DELETE on /api/settings.
 //
-//	GET    /api/settings              -> {"me_mac": "...", "work_start": "09:00", "work_end": "18:30"}
-//	POST   /api/settings  {me_mac, work_start, work_end}  -> {"ok": true}
-//	DELETE /api/settings?clear=me     -> {"ok": true}  (clears me_mac only)
+// GET  /api/settings
 //
-// POST is gated by writeAuth. GET is public (read-only).
+//	-> {"punch_macs": ["AA:..", "BB:.."], "work_start": "09:00", "work_end": "18:30"}
+//
+// POST /api/settings
+//
+//	Body shapes (multiplexed on what fields are present):
+//	  - {"punch_mac": "AA:..", "punch": true}   add a 打卡设备
+//	  - {"punch_mac": "AA:..", "punch": false}  remove a 打卡设备
+//	  - {"work_start": "09:00", "work_end": "18:30"}  update hours
+//	Combined bodies are fine; each field is applied if set.
+//
+// DELETE /api/settings
+//   - ?clear=punch        wipe the entire 打卡设备 set
+//   - ?clear=me           alias of clear=punch (legacy)
+//   - ?mac=AA:..          remove a single mac from the set
+//
+// POST / DELETE are gated by writeAuth. GET is public (read-only).
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if s.settings == nil {
 		writeJSONErr(w, http.StatusServiceUnavailable, "settings not enabled")
@@ -1036,7 +1085,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
-			"me_mac":     strings.ToUpper(cfg.MeMAC),
+			"punch_macs": s.settings.PunchMACsUpper(),
 			"work_start": cfg.WorkStart,
 			"work_end":   cfg.WorkEnd,
 		})
@@ -1045,33 +1094,85 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
 			return
 		}
-		var in Settings
+		var in struct {
+			PunchMAC  *string `json:"punch_mac,omitempty"`
+			Punch     *bool   `json:"punch,omitempty"`
+			WorkStart string  `json:"work_start,omitempty"`
+			WorkEnd   string  `json:"work_end,omitempty"`
+			// Legacy alias: older clients posted {"me_mac": "AA:.."} to
+			// set the single punch device. Treat it as add-only.
+			MeMAC string `json:"me_mac,omitempty"`
+		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
-		if err := s.settings.Update(in); err != nil {
-			writeJSONErr(w, http.StatusBadRequest, err.Error())
-			return
+		// Work hours
+		if in.WorkStart != "" || in.WorkEnd != "" {
+			if err := s.settings.Update(Settings{
+				WorkStart: in.WorkStart,
+				WorkEnd:   in.WorkEnd,
+			}); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		// Punch toggle: punch_mac + explicit true/false flag. When
+		// punch is omitted, default to add (true) for convenience.
+		if in.PunchMAC != nil && *in.PunchMAC != "" {
+			add := true
+			if in.Punch != nil {
+				add = *in.Punch
+			}
+			if add {
+				if err := s.settings.AddPunch(*in.PunchMAC); err != nil {
+					writeJSONErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			} else {
+				if err := s.settings.RemovePunch(*in.PunchMAC); err != nil {
+					writeJSONErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+		}
+		// Legacy me_mac: add to the set (don't replace existing).
+		if in.MeMAC != "" {
+			if err := s.settings.AddPunch(in.MeMAC); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"punch_macs": s.settings.PunchMACsUpper(),
+		})
 	case http.MethodDelete:
 		if !s.writeAuth(r) {
 			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
 			return
 		}
-		clear := r.URL.Query().Get("clear")
-		if clear == "me" {
-			if err := s.settings.ClearMe(); err != nil {
+		if mac := r.URL.Query().Get("mac"); mac != "" {
+			if err := s.settings.RemovePunch(mac); err != nil {
 				writeJSONErr(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-		} else {
-			writeJSONErr(w, http.StatusBadRequest, "clear query parameter must be 'me'")
+			return
 		}
+		clear := r.URL.Query().Get("clear")
+		if clear == "me" || clear == "punch" {
+			if err := s.settings.ClearPunchAll(); err != nil {
+				writeJSONErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			return
+		}
+		writeJSONErr(w, http.StatusBadRequest, "provide ?mac=... or ?clear=punch")
 	default:
 		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1134,3 +1235,375 @@ func (s *Server) handleHolidays(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleNotifications multiplexes GET / POST / DELETE on
+// /api/notifications. Keyed by MAC on the wire (we store by alias
+// internally for readability; that's transparent to callers).
+//
+//	GET    /api/notifications?mac=XX   -> {"mac":"XX","config":{...},"exists":bool}
+//	POST   /api/notifications  {mac, webhook_url, ntfy_*}  -> {"ok":true}
+//	DELETE /api/notifications?mac=XX  -> {"ok":true}  (clears entry)
+//
+// POST / DELETE are gated by writeAuth. After a mutation the notifier
+// rebuilds its subscription set so the new config takes effect within
+// one event loop.
+func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	if s.notifyStore == nil {
+		writeJSONErr(w, http.StatusServiceUnavailable, "notifications not enabled")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		mac := r.URL.Query().Get("mac")
+		if mac == "" {
+			writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
+			return
+		}
+		cfg, ok := s.notifyStore.Lookup(mac)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mac":    strings.ToUpper(normalizeMAC(mac)),
+			"exists": ok,
+			"config": cfg,
+		})
+	case http.MethodPost:
+		if !s.writeAuth(r) {
+			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+			return
+		}
+		var in struct {
+			MAC string `json:"mac"`
+			NotifyConfig
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		if in.MAC == "" {
+			writeJSONErr(w, http.StatusBadRequest, "mac required")
+			return
+		}
+		if err := s.notifyStore.Set(in.MAC, in.NotifyConfig); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.refreshNotifySubs()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	case http.MethodDelete:
+		if !s.writeAuth(r) {
+			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+			return
+		}
+		mac := r.URL.Query().Get("mac")
+		if mac == "" {
+			writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
+			return
+		}
+		if err := s.notifyStore.Set(mac, NotifyConfig{}); err != nil {
+			writeJSONErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.refreshNotifySubs()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	default:
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleNotificationTest fires a synthetic ONLINE/OFFLINE event for
+// the given MAC and dispatches it through the regular pipeline. Used
+// to verify webhook/ntfy markdown without waiting for a real flap.
+//
+//	POST /api/notifications/test  {mac, kind: "ONLINE"|"OFFLINE"}
+//
+// Gated by writeAuth.
+func (s *Server) handleNotificationTest(w http.ResponseWriter, r *http.Request) {
+	if s.notifier == nil || s.notifyStore == nil {
+		writeJSONErr(w, http.StatusServiceUnavailable, "notifications not enabled")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !s.writeAuth(r) {
+		writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+		return
+	}
+	var in struct {
+		MAC  string `json:"mac"`
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if in.MAC == "" {
+		writeJSONErr(w, http.StatusBadRequest, "mac required")
+		return
+	}
+	kind := argus.EventOnline
+	if strings.ToUpper(in.Kind) == "OFFLINE" {
+		kind = argus.EventOffline
+	}
+	// Pull whatever device snapshot the watcher has; falls back to a
+	// minimal stub if the device isn't currently known.
+	dev := argus.Device{MAC: strings.ToUpper(normalizeMAC(in.MAC))}
+	for mac, d := range s.watcher.Known() {
+		if normalizeMAC(mac) == normalizeMAC(in.MAC) {
+			dev = d
+			break
+		}
+	}
+	s.dispatchNotify(argus.Event{
+		Time:   time.Now(),
+		Kind:   kind,
+		Device: dev,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "kind": kind.String()})
+}
+
+// handleNotificationMessages returns recent ntfy res-topic messages
+// for a MAC. Newest first, up to 100.
+//
+//	GET /api/notifications/messages?mac=XX -> {"mac":"XX","messages":[...]}
+func (s *Server) handleNotificationMessages(w http.ResponseWriter, r *http.Request) {
+	if s.notifier == nil {
+		writeJSONErr(w, http.StatusServiceUnavailable, "notifications not enabled")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mac := r.URL.Query().Get("mac")
+	if mac == "" {
+		writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"mac":      strings.ToUpper(normalizeMAC(mac)),
+		"messages": s.notifier.Inbox(mac),
+	})
+}
+
+// refreshNotifySubs rebuilds ntfy subscriptions after a config change.
+// Uses the watcher's known set to resolve alias keys back to MACs.
+func (s *Server) refreshNotifySubs() {
+	if s.notifier == nil {
+		return
+	}
+	resolver := func(key string) string {
+		if s.aliases == nil {
+			return ""
+		}
+		for mac := range s.watcher.Known() {
+			if name := s.aliases.Lookup(mac); name == key {
+				return mac
+			}
+		}
+		return ""
+	}
+	s.notifier.EnsureSubscriptions(resolver)
+}
+
+// chineseWeekdays maps Go's time.Weekday to Chinese day names.
+var chineseWeekdays = []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
+
+// dispatchNotify formats a markdown payload and ships it to the
+// per-device webhook/ntfy destinations. No-op when the device has no
+// notify config or notifier isn't enabled.
+func (s *Server) dispatchNotify(e argus.Event) {
+	if s.notifier == nil || s.notifyStore == nil {
+		return
+	}
+	if e.Kind != argus.EventOnline && e.Kind != argus.EventOffline {
+		return
+	}
+	cfg, ok := s.notifyStore.Lookup(e.Device.MAC)
+	if !ok {
+		return
+	}
+	mac := normalizeMAC(e.Device.MAC)
+	macU := strings.ToUpper(mac)
+	alias := ""
+	if s.aliases != nil {
+		alias = s.aliases.Lookup(mac)
+	}
+	displayName := alias
+	if displayName == "" {
+		displayName = e.Device.Hostname
+	}
+	if displayName == "" {
+		displayName = macU
+	}
+	isPunch := s.settings != nil && s.settings.IsPunch(mac)
+
+	when := nonZeroTime(e.Time)
+	//payload := eventPayload(e)
+	//payload["alias"] = alias
+	//payload["display_name"] = displayName
+	//payload["is_punch"] = isPunch
+
+	payload := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch)
+	s.notifier.Dispatch(mac, cfg, payload, e.Kind.String())
+}
+
+// formatNotifyMarkdown renders the per-device markdown body. Punch
+// devices on ONLINE get worktime stats (today's overtime + month
+// total); everything else gets the lightweight "上线啦/下线啦" form.
+func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName, alias, mac string, isPunch bool) map[string]any {
+	when = when.In(time.Local)
+	dateStr := when.Format("2006-01-02")
+	weekday := chineseWeekdays[int(when.Weekday())]
+	clock := when.Format("15:04:05")
+	clockMs := fmt.Sprintf("%s.%03d", clock, when.Nanosecond()/1e6)
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "—"
+	}
+	ip := e.Device.IP
+	if ip == "" {
+		ip = "—"
+	}
+
+	markdown := make(map[string]interface{})
+	var verb string
+	var b strings.Builder
+	if isPunch {
+		if e.Kind == argus.EventOnline {
+			verb = "上班了"
+		} else if e.Kind == argus.EventOffline {
+			verb = "下班了"
+		} else {
+			verb = e.Kind.String()
+		}
+		fmt.Fprintf(&b, "【%s】%s\n", displayName, verb)
+		fmt.Fprintf(&b, "- 今天是 %s %s\n", dateStr, weekday)
+		fmt.Fprintf(&b, "- 设备：%s\n", host)
+		fmt.Fprintf(&b, "- 信号：%d\n", e.Device.RSSI)
+		fmt.Fprintf(&b, "- Wi-Fi：%s\n", e.Device.SSID)
+		fmt.Fprintf(&b, "- 频道：%s\n", e.Device.Radio)
+		fmt.Fprintf(&b, "- 类别：%s\n", e.Device.Type)
+		fmt.Fprintf(&b, "- IP地址：%s\n", ip)
+		fmt.Fprintf(&b, "- Mac地址：%s\n", strings.ToLower(mac))
+		// Worktime context — only meaningful when history+settings are
+		// enabled. Soft-skip individual lines that can't be computed.
+		if s.history != nil && s.settings != nil {
+			cfg := s.settings.Get()
+			day, _ := time.ParseInLocation("2006-01-02", dateStr, time.Local)
+			from := day.Add(-24 * time.Hour)
+			to := day.Add(48 * time.Hour)
+			entries, _ := s.history.Query(mac, from, to)
+			var override Override
+			if s.overrides != nil {
+				if o, ok := s.overrides.Lookup(mac, dateStr); ok {
+					override = o
+				}
+			}
+			rep := ComputeWorktime(mac, day, cfg.WorkStart, cfg.WorkEnd, entries, when, override, s.dayKindFor(day))
+			// On ONLINE we expect FirstSeen to equal `when` (or be very
+			// close); on OFFLINE we want LastSeen.
+			if e.Kind == argus.EventOnline && rep.FirstSeenMs > 0 {
+				fmt.Fprintf(&b, "- 上班时间：%s\n", time.UnixMilli(rep.FirstSeenMs).In(time.Local).Format("15:04:05"))
+			} else if e.Kind == argus.EventOffline && rep.LastSeenMs > 0 {
+				fmt.Fprintf(&b, "- 下班时间：%s\n", time.UnixMilli(rep.LastSeenMs).In(time.Local).Format("15:04:05"))
+			}
+			fmt.Fprintf(&b, "- 今日加班时长：%s\n", humanDuration(rep.OvertimeSecs))
+			// Month total — current calendar month up to today (or
+			// through the event day, whichever the event date implies).
+			if monthOT, ok := s.monthOvertimeSecs(mac, day, when); ok {
+				fmt.Fprintf(&b, "- 本月加班时长：%s\n", humanDuration(monthOT))
+			}
+		}
+		fmt.Fprintf(&b, "- 消息时间：%s", clockMs)
+	} else {
+		if e.Kind == argus.EventOnline {
+			verb = "上线啦"
+		} else if e.Kind == argus.EventOffline {
+			verb = "下线啦"
+		} else {
+			verb = e.Kind.String()
+		}
+		fmt.Fprintf(&b, "【%s】%s\n", displayName, verb)
+		fmt.Fprintf(&b, "- 今天是 %s %s\n", dateStr, weekday)
+		fmt.Fprintf(&b, "- 设备：%s\n", host)
+		fmt.Fprintf(&b, "- 信号：%d\n", e.Device.RSSI)
+		fmt.Fprintf(&b, "- Wi-Fi：%s\n", e.Device.SSID)
+		fmt.Fprintf(&b, "- 频道：%s\n", e.Device.Radio)
+		fmt.Fprintf(&b, "- 类别：%s\n", e.Device.Type)
+		fmt.Fprintf(&b, "- IP地址：%s\n", ip)
+		fmt.Fprintf(&b, "- Mac地址：%s\n", strings.ToLower(mac))
+		fmt.Fprintf(&b, "- 消息时间：%s", clockMs)
+	}
+	payload := map[string]any{}
+	markdown["title"] = fmt.Sprintf("【%s】%s", alias, verb)
+	markdown["text"] = b.String()
+	payload["markdown"] = markdown
+	payload["msgtype"] = "markdown"
+	return payload
+}
+
+// monthOvertimeSecs sums overtime for the calendar month containing
+// `day`, up to and including `now`. Returns false on missing stores.
+func (s *Server) monthOvertimeSecs(mac string, day, now time.Time) (int64, bool) {
+	if s.history == nil || s.settings == nil {
+		return 0, false
+	}
+	cfg := s.settings.Get()
+	monthStart := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, day.Location())
+	monthEnd := monthStart.AddDate(0, 1, 0)
+	from := monthStart.Add(-24 * time.Hour)
+	to := monthEnd.Add(24 * time.Hour)
+	entries, err := s.history.Query(mac, from, to)
+	if err != nil {
+		return 0, false
+	}
+	cap := monthEnd
+	if now.Before(cap) {
+		cap = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Add(24 * time.Hour)
+	}
+	var total int64
+	for d := monthStart; d.Before(cap); d = d.AddDate(0, 0, 1) {
+		var override Override
+		if s.overrides != nil {
+			if o, ok := s.overrides.Lookup(mac, d.Format("2006-01-02")); ok {
+				override = o
+			}
+		}
+		rep := ComputeWorktime(mac, d, cfg.WorkStart, cfg.WorkEnd, entries, now, override, s.dayKindFor(d))
+		total += rep.OvertimeSecs
+	}
+	return total, true
+}
+
+// humanDuration renders seconds as "1h7m13s" / "45s" / "0s". Compact
+// form to match the markdown spec (different from the dashboard's
+// fully-spelled "1时7分13秒").
+func humanDuration(secs int64) string {
+	if secs <= 0 {
+		return "0s"
+	}
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	var b strings.Builder
+	if h > 0 {
+		fmt.Fprintf(&b, "%dh", h)
+	}
+	if m > 0 {
+		fmt.Fprintf(&b, "%dm", m)
+	}
+	if s > 0 || b.Len() == 0 {
+		fmt.Fprintf(&b, "%ds", s)
+	}
+	return b.String()
+}

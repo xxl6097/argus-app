@@ -5,19 +5,27 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 )
 
 // Settings holds dashboard-level user preferences persisted to JSON.
 //
-// Currently:
-//   - MeMAC       the MAC tagged as "my phone" for worktime tracking
+// Fields:
+//   - PunchMACs   MACs tagged as 打卡设备 for worktime tracking (any number)
 //   - WorkStart   standard workday start, HH:MM (default "09:00")
 //   - WorkEnd     standard workday end, HH:MM (default "18:30")
+//
+// Legacy field (kept on disk for backward compat):
+//   - MeMAC       single-MAC predecessor of PunchMACs. On load, if
+//     PunchMACs is empty but MeMAC is set, we fold MeMAC into the list
+//     and drop the legacy field on next persist.
 type Settings struct {
-	MeMAC     string `json:"me_mac,omitempty"`
-	WorkStart string `json:"work_start,omitempty"`
-	WorkEnd   string `json:"work_end,omitempty"`
+	PunchMACs []string `json:"punch_macs,omitempty"`
+	MeMAC     string   `json:"me_mac,omitempty"` // legacy; superseded by PunchMACs
+	WorkStart string   `json:"work_start,omitempty"`
+	WorkEnd   string   `json:"work_end,omitempty"`
 }
 
 // SettingsStore is a tiny JSON-file-backed settings store, mirroring
@@ -59,64 +67,153 @@ func (s *SettingsStore) load() {
 	if d.WorkEnd == "" {
 		d.WorkEnd = "18:30"
 	}
-	d.MeMAC = normalizeMAC(d.MeMAC)
+	// Migrate legacy single MeMAC → PunchMACs list on first load.
+	// Normalize every entry and deduplicate, then discard MeMAC so the
+	// next persist drops it from disk.
+	seen := make(map[string]struct{})
+	merged := make([]string, 0, len(d.PunchMACs)+1)
+	for _, m := range d.PunchMACs {
+		m = normalizeMAC(m)
+		if m == "" {
+			continue
+		}
+		if _, dup := seen[m]; dup {
+			continue
+		}
+		seen[m] = struct{}{}
+		merged = append(merged, m)
+	}
+	if legacy := normalizeMAC(d.MeMAC); legacy != "" {
+		if _, dup := seen[legacy]; !dup {
+			merged = append(merged, legacy)
+			seen[legacy] = struct{}{}
+		}
+	}
+	sort.Strings(merged)
+	d.PunchMACs = merged
+	d.MeMAC = "" // drop legacy
 	s.mu.Lock()
 	s.data = d
 	s.mu.Unlock()
 }
 
-// Get returns a snapshot of current settings.
+// Get returns a snapshot of current settings. The returned slice is
+// safe to hold — it's copied.
 func (s *SettingsStore) Get() Settings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.data
+	out := s.data
+	if len(s.data.PunchMACs) > 0 {
+		out.PunchMACs = append([]string(nil), s.data.PunchMACs...)
+	}
+	return out
 }
 
-// Update applies a partial update. Fields with zero values are left
-// untouched unless the caller explicitly wants to clear MeMAC via the
-// dedicated ClearMe path (/api/settings DELETE me). WorkStart / WorkEnd
-// validate as HH:MM and must satisfy start < end.
+// IsPunch reports whether mac is currently tagged as a 打卡设备.
+func (s *SettingsStore) IsPunch(mac string) bool {
+	mac = normalizeMAC(mac)
+	if mac == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.data.PunchMACs {
+		if m == mac {
+			return true
+		}
+	}
+	return false
+}
+
+// AddPunch adds mac to the 打卡设备 set. No-op if already present.
+func (s *SettingsStore) AddPunch(mac string) error {
+	mac = normalizeMAC(mac)
+	if mac == "" {
+		return errors.New("web: punch mac required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.data.PunchMACs {
+		if m == mac {
+			return nil
+		}
+	}
+	s.data.PunchMACs = append(s.data.PunchMACs, mac)
+	sort.Strings(s.data.PunchMACs)
+	return s.persistLocked()
+}
+
+// RemovePunch removes mac from the 打卡设备 set. No-op if absent.
+func (s *SettingsStore) RemovePunch(mac string) error {
+	mac = normalizeMAC(mac)
+	if mac == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.data.PunchMACs[:0]
+	for _, m := range s.data.PunchMACs {
+		if m != mac {
+			out = append(out, m)
+		}
+	}
+	s.data.PunchMACs = append([]string{}, out...)
+	return s.persistLocked()
+}
+
+// Update applies a partial update to work-hour fields. MAC-set edits
+// should go through AddPunch / RemovePunch. WorkStart / WorkEnd
+// validate as HH:MM (or HH:MM:SS via parseClock) and must satisfy
+// start < end.
 func (s *SettingsStore) Update(in Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.data
-	if in.MeMAC != "" {
-		next.MeMAC = normalizeMAC(in.MeMAC)
-	}
 	if in.WorkStart != "" {
-		if _, ok := parseHHMM(in.WorkStart); !ok {
+		if _, ok := parseClock(in.WorkStart); !ok {
 			return errors.New("web: work_start must be HH:MM")
 		}
 		next.WorkStart = in.WorkStart
 	}
 	if in.WorkEnd != "" {
-		if _, ok := parseHHMM(in.WorkEnd); !ok {
+		if _, ok := parseClock(in.WorkEnd); !ok {
 			return errors.New("web: work_end must be HH:MM")
 		}
 		next.WorkEnd = in.WorkEnd
 	}
-	sMin, _ := parseHHMM(next.WorkStart)
-	eMin, _ := parseHHMM(next.WorkEnd)
-	if eMin <= sMin {
+	sSec, _ := parseClock(next.WorkStart)
+	eSec, _ := parseClock(next.WorkEnd)
+	if eSec <= sSec {
 		return errors.New("web: work_end must be after work_start")
 	}
 	s.data = next
 	return s.persistLocked()
 }
 
-// ClearMe removes the "my phone" tag without touching work hours.
-func (s *SettingsStore) ClearMe() error {
+// ClearPunchAll wipes the entire 打卡设备 set.
+func (s *SettingsStore) ClearPunchAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.MeMAC = ""
+	s.data.PunchMACs = nil
 	return s.persistLocked()
 }
+
+// ClearMe is kept for callsite compat (old DELETE /api/settings?clear=me).
+// Equivalent to ClearPunchAll.
+func (s *SettingsStore) ClearMe() error { return s.ClearPunchAll() }
 
 func (s *SettingsStore) persistLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	// Strip legacy MeMAC on write so the file converges on the new shape.
+	// Keep an empty array out of the JSON when no punch MACs are set.
+	out := s.data
+	out.MeMAC = ""
+	if len(out.PunchMACs) == 0 {
+		out.PunchMACs = nil
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -128,4 +225,16 @@ func (s *SettingsStore) persistLocked() error {
 		return err
 	}
 	return os.Rename(tmp, s.path)
+}
+
+// PunchMACsUpper returns the 打卡设备 MACs as uppercase strings for
+// wire formats that prefer display case (e.g. /api/settings GET).
+func (s *SettingsStore) PunchMACsUpper() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.data.PunchMACs))
+	for i, m := range s.data.PunchMACs {
+		out[i] = strings.ToUpper(m)
+	}
+	return out
 }

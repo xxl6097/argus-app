@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0e1014">
-<title>Argus · 设备监控</title>
+<title>WiFi 考勤 · 工时统计</title>
 <style>
   :root {
     --bg: #0e1014; --fg: #e6e6e6; --muted: #8a8f98; --line: #1e2128;
@@ -251,6 +251,19 @@
   .wt-empty, .hist-empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 6px 0; }
   .wt-open { color: var(--change); font-size: 11px; margin-top: 4px; }
 
+  /* Notify pane: per-device webhook + ntfy form */
+  .notify-form { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
+  .notify-section h3 {
+    margin: 0 0 8px 0; font-size: 12px; font-weight: 500;
+    color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .notify-row { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 640px) { .notify-row { grid-template-columns: 1fr; } }
+  .notify-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .notify-msgs h3 {
+    margin: 8px 0 6px 0; font-size: 12px; font-weight: 500; color: var(--muted);
+  }
+
   /* History timeline list */
   .hist-list {
     max-height: 260px; overflow-y: auto; padding: 0; margin: 0;
@@ -402,8 +415,8 @@
 </head>
 <body>
 <header>
-  <h1>Argus</h1>
-  <span class="sub">设备监控</span>
+  <h1>WiFi 考勤</h1>
+  <span class="sub">工时统计</span>
   <span class="status" id="status">
     <span class="pill" id="conn" style="background: rgba(138,143,152,0.15); color: var(--muted);">连接中…</span>
     <span class="pill online" id="count-online" title="在线设备数">在线 0</span>
@@ -414,7 +427,7 @@
 </header>
 <main>
   <section>
-    <h2>已知设备</h2>
+    <h2>局域网设备</h2>
     <!-- Desktop / tablet view -->
     <table class="devices-table">
       <colgroup>
@@ -441,14 +454,14 @@
     <div class="cards" id="devices-cards"></div>
   </section>
   <section>
-    <h2>实时事件流
+    <h2>打卡事件
       <span class="sub">SSE · /api/events</span>
     </h2>
     <ul id="events-list"><li class="empty" style="display:block;">等待事件…</li></ul>
   </section>
 </main>
 <footer>
-  Argus · 百眼守望者 ·
+  WiFi 考勤 · 基于路由器在线状态自动统计工时与加班 ·
   <code>GET /api/devices</code>
   <code>GET /api/events</code>
 </footer>
@@ -521,8 +534,8 @@
       const link = linkText(d);
       const meBadge = caps.settings
         ? (d.is_me
-            ? '<span class="me-badge" data-action="toggle-me" title="已标记为我的设备(点击取消)">是我</span>'
-            : '<span class="me-badge is-not-me" data-action="toggle-me" title="设为我的设备,用于加班统计">设为我</span>')
+            ? '<span class="me-badge" data-action="toggle-me" title="当前的打卡设备,工作时长以此设备在线状态为准(点击取消)">打卡设备</span>'
+            : '<span class="me-badge is-not-me" data-action="toggle-me" title="设为打卡设备,以此设备上下线记录为准统计工作时长与加班">设为打卡</span>')
         : '';
       tr.innerHTML =
         '<td><span class="expand-chev">▶</span>' + statusPill + '</td>' +
@@ -553,8 +566,8 @@
       const hostTitle = (d.alias ? d.alias + (d.hostname ? " (" + d.hostname + ")" : "") : (d.hostname || ""));
       const meBadge = caps.settings
         ? (d.is_me
-            ? ' <span class="me-badge" data-action="toggle-me">是我</span>'
-            : ' <span class="me-badge is-not-me" data-action="toggle-me">设为我</span>')
+            ? ' <span class="me-badge" data-action="toggle-me" title="当前的打卡设备">打卡设备</span>'
+            : ' <span class="me-badge is-not-me" data-action="toggle-me" title="设为打卡设备">设为打卡</span>')
         : '';
       card.innerHTML =
         '<div class="cr-mac" title="' + esc(d.mac) + '"><span class="expand-chev">▶</span>' + esc(d.mac) + meBadge + '</div>' +
@@ -641,18 +654,19 @@
     if (devRow) toggleDetail(devRow);
   });
 
-  // toggleMe sets or clears the "me" MAC via /api/settings, then
-  // triggers a devices reload so the badge state refreshes.
+  // toggleMe adds or removes the given MAC from the 打卡设备 set.
+  // Non-exclusive: multiple devices can be in the set simultaneously,
+  // so we only touch the one the user clicked.
   async function toggleMe(mac, makeMe) {
     try {
       let r;
       if (makeMe) {
         r = await fetch("/api/settings", {
           method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ me_mac: mac }),
+          body: JSON.stringify({ punch_mac: mac, punch: true }),
         });
       } else {
-        r = await fetch("/api/settings?clear=me", { method: "DELETE" });
+        r = await fetch("/api/settings?mac=" + encodeURIComponent(mac), { method: "DELETE" });
       }
       if (!r.ok) {
         const b = await r.json().catch(() => ({}));
@@ -700,7 +714,7 @@
     // isMe is sourced from the row's dataset (set during render from
     // the per-device `is_me` field). This keeps the decision tied to
     // the authoritative /api/devices response instead of the cached
-    // settings snapshot, which may lag a 设为我/取消 toggle by one
+    // settings snapshot, which may lag a 设为打卡/取消 toggle by one
     // render cycle.
     const isMe = row.dataset.isMe === "1";
     const isTable = row.tagName === "TR";
@@ -730,15 +744,20 @@
 
   function renderDetail(wrap, mac, isMe) {
     const caps = window._caps || {};
-    // Worktime + 月统计 are "me-only": only the device tagged as
-    // 我的手机 gets the overtime tabs. Everyone else sees only the
-    // on/off timeline.
+    // 工作时长 + 月统计 are gated on "this is the 打卡设备" — the
+    // user flipped its is_me flag via the row badge. Everyone else
+    // sees only the on/off timeline.
     const hasWorktime = caps.worktime && isMe;
+    const notifyTab = caps.notifications
+      ? '<span class="tab" data-tab="notify">⚙ 信息设置</span>'
+      : '';
     const tabs = hasWorktime
       ? '<span class="tab active" data-tab="worktime">📊 工作时长</span>' +
         '<span class="tab" data-tab="months">📅 月统计</span>' +
-        '<span class="tab" data-tab="history">📜 上下线记录</span>'
-      : '<span class="tab active" data-tab="history">📜 上下线记录</span>';
+        '<span class="tab" data-tab="history">📜 上下线记录</span>' +
+        notifyTab
+      : '<span class="tab active" data-tab="history">📜 上下线记录</span>' +
+        notifyTab;
     wrap.innerHTML =
       '<div class="detail-head">' + tabs +
       '<span style="margin-left:auto">MAC ' + esc(mac) + '</span>' +
@@ -758,6 +777,8 @@
           worktimeInitMonth = month;
           activateTab("worktime", month);
         });
+      } else if (name === "notify") {
+        renderNotifyPane(body, mac);
       } else {
         renderHistoryPane(body, mac);
       }
@@ -1216,6 +1237,143 @@
       if (!row) return;
       if (onPickMonth) onPickMonth(row.dataset.month);
     });
+  }
+
+  // renderNotifyPane shows a per-device form for webhook + ntfy
+  // settings, plus a list of recent ntfy res-topic messages. The form
+  // POSTs the whole config back; backend trims unknown fields.
+  async function renderNotifyPane(body, mac) {
+    body.innerHTML = '<div class="wt-empty">加载中…</div>';
+    let cfg = { webhook_url: "", ntfy_server: "", ntfy_username: "",
+                ntfy_password: "", ntfy_req_topic: "", ntfy_res_topic: "" };
+    let exists = false;
+    try {
+      const r = await fetch("/api/notifications?mac=" + encodeURIComponent(mac), { cache: "no-store" });
+      if (r.ok) {
+        const b = await r.json();
+        exists = !!b.exists;
+        if (b.config) cfg = { ...cfg, ...b.config };
+      }
+    } catch (_) { /* best-effort */ }
+
+    body.innerHTML =
+      '<div class="notify-form">' +
+      '<div class="notify-section"><h3>Webhook</h3>' +
+      '<label class="modal-field">' +
+      '  <span>Webhook 地址 (上下线时 POST JSON,留空关闭)</span>' +
+      '  <input type="url" class="nf-webhook" placeholder="https://example.com/hook" value="' + esc(cfg.webhook_url) + '">' +
+      '</label>' +
+      '</div>' +
+      '<div class="notify-section"><h3>ntfy 推送 + 接收</h3>' +
+      '<label class="modal-field">' +
+      '  <span>服务器地址 (例 https://ntfy.sh,留空关闭)</span>' +
+      '  <input type="url" class="nf-server" placeholder="https://ntfy.sh" value="' + esc(cfg.ntfy_server) + '">' +
+      '</label>' +
+      '<div class="notify-row">' +
+      '<label class="modal-field"><span>用户名 (可选)</span>' +
+      '<input type="text" class="nf-user" autocomplete="off" value="' + esc(cfg.ntfy_username) + '"></label>' +
+      '<label class="modal-field"><span>密码 (可选)</span>' +
+      '<input type="password" class="nf-pass" autocomplete="new-password" value="' + esc(cfg.ntfy_password) + '"></label>' +
+      '</div>' +
+      '<div class="notify-row">' +
+      '<label class="modal-field"><span>req 主题 (推送上下线消息)</span>' +
+      '<input type="text" class="nf-req" placeholder="device-events" value="' + esc(cfg.ntfy_req_topic) + '"></label>' +
+      '<label class="modal-field"><span>res 主题 (订阅,接收外部消息)</span>' +
+      '<input type="text" class="nf-res" placeholder="device-replies" value="' + esc(cfg.ntfy_res_topic) + '"></label>' +
+      '</div>' +
+      '</div>' +
+      '<div class="notify-actions">' +
+      '<button class="hdr-btn nf-save">保存</button>' +
+      (exists ? '<button class="hdr-btn hdr-danger nf-del">移除</button>' : '') +
+      '<span class="nf-status" style="margin-left:6px;color:var(--muted);font-size:11px"></span>' +
+      '</div>' +
+      '</div>' +
+      '<div class="notify-msgs">' +
+      '<h3 style="display:flex;align-items:center;gap:8px">res 主题最近消息' +
+      '<button class="hdr-btn nf-refresh" style="font-size:11px">刷新</button>' +
+      '</h3>' +
+      '<div class="nf-msg-list"><div class="wt-empty">尚未加载</div></div>' +
+      '</div>';
+
+    const webhookEl = body.querySelector(".nf-webhook");
+    const serverEl = body.querySelector(".nf-server");
+    const userEl = body.querySelector(".nf-user");
+    const passEl = body.querySelector(".nf-pass");
+    const reqEl = body.querySelector(".nf-req");
+    const resEl = body.querySelector(".nf-res");
+    const statusEl = body.querySelector(".nf-status");
+    const saveBtn = body.querySelector(".nf-save");
+    const delBtn = body.querySelector(".nf-del");
+    const msgList = body.querySelector(".nf-msg-list");
+
+    const collect = () => ({
+      mac,
+      webhook_url: webhookEl.value.trim(),
+      ntfy_server: serverEl.value.trim(),
+      ntfy_username: userEl.value,
+      ntfy_password: passEl.value,
+      ntfy_req_topic: reqEl.value.trim(),
+      ntfy_res_topic: resEl.value.trim(),
+    });
+    const flash = (msg, ok) => {
+      statusEl.textContent = msg;
+      statusEl.style.color = ok ? "var(--accent)" : "var(--offline)";
+      setTimeout(() => { statusEl.textContent = ""; }, 2000);
+    };
+    saveBtn.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/api/notifications", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(collect()),
+        });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) { flash(b.error || ("HTTP " + r.status), false); return; }
+        flash("✓ 已保存", true);
+        loadMessages();
+      } catch (e) { flash("网络错误: " + e.message, false); }
+    });
+    if (delBtn) {
+      delBtn.addEventListener("click", async () => {
+        if (!confirm("移除该设备的全部通知配置?")) return;
+        try {
+          const r = await fetch("/api/notifications?mac=" + encodeURIComponent(mac), { method: "DELETE" });
+          const b = await r.json().catch(() => ({}));
+          if (!r.ok) { flash(b.error || ("HTTP " + r.status), false); return; }
+          renderNotifyPane(body, mac);
+        } catch (e) { flash("网络错误: " + e.message, false); }
+      });
+    }
+
+    const loadMessages = async () => {
+      msgList.innerHTML = '<div class="wt-empty">加载中…</div>';
+      try {
+        const r = await fetch("/api/notifications/messages?mac=" + encodeURIComponent(mac), { cache: "no-store" });
+        if (!r.ok) {
+          msgList.innerHTML = '<div class="wt-empty">未启用 res 主题订阅</div>';
+          return;
+        }
+        const b = await r.json();
+        const msgs = b.messages || [];
+        if (msgs.length === 0) {
+          msgList.innerHTML = '<div class="wt-empty">暂无消息(若已配置 res 主题,等待外部端推送)</div>';
+          return;
+        }
+        let html = '<ul class="hist-list" style="max-height:280px">';
+        for (const m of msgs) {
+          const t = new Date(m.received_at).toLocaleString();
+          const title = m.title ? '<b>' + esc(m.title) + '</b> ' : '';
+          html += '<li>' +
+            '<span class="h-ts">' + esc(t) + '</span>' +
+            '<span class="h-kind online">' + esc(m.topic || "") + '</span>' +
+            '<span class="h-extra">' + title + esc(m.message || "") + '</span>' +
+            '</li>';
+        }
+        html += '</ul>';
+        msgList.innerHTML = html;
+      } catch (e) { msgList.innerHTML = '<div class="wt-empty">网络错误: ' + esc(e.message) + '</div>'; }
+    };
+    body.querySelector(".nf-refresh").addEventListener("click", loadMessages);
+    loadMessages();
   }
 
   // openOverrideModal pops a small dialog to set/clear the manual
