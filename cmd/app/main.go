@@ -184,6 +184,9 @@ func main() {
 		} else {
 			log.Println("Web UI 登录已禁用 (-credentials=\"\") — 任何 LAN 用户都能访问仪表板")
 		}
+		opts = append(opts, web.WithVersion(web.VersionInfo{
+			Version: Version, Commit: Commit, Date: Date,
+		}, "xxl6097/argus-app"))
 		webServer = web.NewServer(w, opts...)
 		httpSrv = &http.Server{
 			Addr:         *listen,

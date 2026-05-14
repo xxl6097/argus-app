@@ -56,6 +56,37 @@
   .hdr-btn.hdr-danger:hover {
     background: rgba(240,113,120,0.15); border-color: var(--offline);
   }
+  /* hdr-update: 当 /api/version/check 返回 has_update=true, 顶部版本
+     徽章变橙色高亮, 引导用户点击查看更新内容 */
+  .hdr-btn.hdr-update {
+    color: var(--change); border-color: rgba(229,192,123,0.45);
+    background: rgba(229,192,123,0.08);
+  }
+  .hdr-btn.hdr-update:hover { background: rgba(229,192,123,0.15); }
+
+  /* ---------- Modal (用于查看版本 / release notes) ---------- */
+  .modal-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  .modal-mask.show { display: flex; }
+  .modal-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    width: min(560px, 92vw); max-height: 80vh; padding: 18px 22px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .modal-card h3 { margin: 0; font-size: 15px; font-weight: 500; color: var(--accent); }
+  .modal-card .meta { color: var(--muted); font-size: 12px; }
+  .modal-card .notes {
+    flex: 1; overflow-y: auto; font-size: 12px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-word;
+    padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px;
+    background: rgba(0,0,0,0.2); color: var(--fg);
+  }
+  .modal-card .actions {
+    display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
+  }
 
   /* ---------- Layout ---------- */
   main {
@@ -431,6 +462,7 @@
     <span class="pill offline" id="count-offline" title="离线设备数">离线 0</span>
     <button id="btn-restart-net" class="hdr-btn" title="重启网络服务 (约 5-15 秒瞬断,保留配置)">重启网络</button>
     <button id="btn-reboot" class="hdr-btn hdr-danger" title="重启路由器 (将断网 30-60 秒)">重启路由器</button>
+    <button id="btn-version" class="hdr-btn" title="点击查看版本 / 检查更新" style="display:none">v?</button>
     <button id="btn-passwd" class="hdr-btn" title="修改登录密码" style="display:none">🔑 改密</button>
     <button id="btn-logout" class="hdr-btn" title="退出登录" style="display:none">⏻ 退出</button>
   </span>
@@ -2234,8 +2266,173 @@
         }
       });
     });
+
+    // ---- 版本号显示 + 在线检测升级 ----
+    // header 上的版本徽章: 启动时立刻拉一次 /api/version 显示当前版本,
+    // 然后异步 /api/version/check 询问 GitHub. 有新版 → 徽章变橙 +
+    // 加 🆙 前缀提示. 点击弹 modal 显示 release notes + 一键升级按钮.
+    const versionBtn = document.getElementById("btn-version");
+    const vmModal    = document.getElementById("version-modal");
+    const vmTitle    = document.getElementById("vm-title");
+    const vmMeta     = document.getElementById("vm-meta");
+    const vmNotes    = document.getElementById("vm-notes");
+    const vmUpgrade  = document.getElementById("vm-upgrade");
+    const vmRelease  = document.getElementById("vm-release");
+    const vmRecheck  = document.getElementById("vm-recheck");
+    const vmClose    = document.getElementById("vm-close");
+
+    let versionState = {
+      current: "", upgradeOpen: false,
+      latest: "", hasUpdate: false, releaseURL: "", notes: "", checked: false,
+    };
+
+    function renderVersionPill() {
+      const cur = versionState.current || "?";
+      versionBtn.textContent = (versionState.hasUpdate ? "🆙 " : "v") +
+                               cur.replace(/^v/, "");
+      versionBtn.classList.toggle("hdr-update", versionState.hasUpdate);
+      versionBtn.style.display = "";
+      if (versionState.hasUpdate) {
+        versionBtn.title = "发现新版本 " + versionState.latest + ",点击查看";
+      } else if (versionState.checked) {
+        versionBtn.title = "当前已是最新 (" + cur + "),点击查看 release notes";
+      } else {
+        versionBtn.title = "当前版本 " + cur + ",点击检查更新";
+      }
+    }
+
+    async function loadVersion() {
+      try {
+        const r = await fetch("/api/version");
+        if (!r.ok) return;
+        const v = await r.json();
+        versionState.current = v.version || "dev";
+        versionState.upgradeOpen = !!v.upgrade_open;
+        renderVersionPill();
+      } catch (_) { /* best-effort */ }
+    }
+
+    async function checkUpdate(force) {
+      if (!versionState.upgradeOpen) {
+        vmTitle.textContent = "版本信息";
+        vmMeta.textContent = "当前版本: " + (versionState.current || "?");
+        vmNotes.textContent = "升级检测未启用 (开发版本或离线部署)。";
+        vmUpgrade.style.display = "none";
+        vmRelease.style.display = "none";
+        return;
+      }
+      vmTitle.textContent = "检查更新中…";
+      vmMeta.textContent = "";
+      vmNotes.textContent = "正在询问 GitHub…";
+      vmUpgrade.style.display = "none";
+      vmRelease.style.display = "none";
+      try {
+        const url = "/api/version/check" + (force ? "?force=1" : "");
+        const r = await fetch(url);
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          vmTitle.textContent = "检查失败";
+          vmNotes.textContent = b.error || ("HTTP " + r.status);
+          return;
+        }
+        const data = await r.json();
+        versionState.latest     = data.latest || "";
+        versionState.hasUpdate  = !!data.has_update;
+        versionState.releaseURL = data.release_url || "";
+        versionState.notes      = data.notes || "";
+        versionState.checked    = true;
+        renderVersionPill();
+
+        if (data.has_update) {
+          vmTitle.textContent = "🆙 发现新版本 " + data.latest;
+        } else {
+          vmTitle.textContent = "当前已是最新版本";
+        }
+        vmMeta.textContent = "当前: " + (data.current || "?") + "  ·  最新: " + (data.latest || "?") +
+                             (data.fetched_at ? "  ·  查询于 " + data.fetched_at.replace("T", " ").replace("Z", " UTC") : "");
+        vmNotes.textContent = data.notes || "(此版本没有 release notes)";
+        vmRelease.style.display = data.release_url ? "" : "none";
+        vmUpgrade.style.display = data.has_update ? "" : "none";
+      } catch (e) {
+        vmTitle.textContent = "网络错误";
+        vmNotes.textContent = e.message;
+      }
+    }
+
+    versionBtn.addEventListener("click", () => {
+      vmModal.classList.add("show");
+      checkUpdate(false);
+    });
+    vmClose.addEventListener("click", () => vmModal.classList.remove("show"));
+    vmModal.addEventListener("click", (ev) => {
+      if (ev.target === vmModal) vmModal.classList.remove("show");
+    });
+    vmRecheck.addEventListener("click", () => checkUpdate(true));
+    vmRelease.addEventListener("click", () => {
+      if (versionState.releaseURL) window.open(versionState.releaseURL, "_blank", "noopener");
+    });
+    vmUpgrade.addEventListener("click", async () => {
+      const target = versionState.latest || "";
+      if (!confirm("确认升级到 " + target + " ?\n升级期间服务会重启 30-60 秒,期间页面短暂不可用。")) return;
+      vmUpgrade.disabled = true;
+      vmUpgrade.textContent = "已发起升级,稍候…";
+      try {
+        const r = await fetch("/api/upgrade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: target }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          alert("升级启动失败: " + (data.error || r.status));
+          vmUpgrade.disabled = false;
+          vmUpgrade.textContent = "立即升级";
+          return;
+        }
+        vmNotes.textContent =
+          "升级已在后台启动 → " + (data.target || target) + "\n" +
+          "日志:" + (data.log || "/tmp/argus-upgrade.log") + "\n" +
+          (data.hint || "服务将在 30-60 秒内重启,完成后请刷新页面") + "\n\n" +
+          "页面会在 60 秒后自动刷新。";
+        setTimeout(() => location.reload(), 60_000);
+      } catch (e) {
+        alert("网络错误: " + e.message);
+        vmUpgrade.disabled = false;
+        vmUpgrade.textContent = "立即升级";
+      }
+    });
+
+    // 启动: 拉一次当前版本立刻显示, 然后后台静默检查一次
+    loadVersion().then(() => {
+      // 静默自动 check 一次, 拿到 has_update 让徽章变橙
+      if (versionState.upgradeOpen) {
+        fetch("/api/version/check").then(r => r.ok ? r.json() : null).then(data => {
+          if (!data) return;
+          versionState.latest    = data.latest || "";
+          versionState.hasUpdate = !!data.has_update;
+          versionState.releaseURL = data.release_url || "";
+          versionState.notes     = data.notes || "";
+          versionState.checked   = true;
+          renderVersionPill();
+        }).catch(() => {});
+      }
+    });
   })();
 })();
 </script>
+
+<div class="modal-mask" id="version-modal">
+  <div class="modal-card">
+    <h3 id="vm-title">版本信息</h3>
+    <div class="meta" id="vm-meta">—</div>
+    <div class="notes" id="vm-notes">—</div>
+    <div class="actions">
+      <button class="hdr-btn" id="vm-recheck" title="忽略缓存重新查询">重新检查</button>
+      <button class="hdr-btn" id="vm-release" title="在 GitHub 打开此版本页">查看 Release</button>
+      <button class="hdr-btn hdr-update" id="vm-upgrade" style="display:none">立即升级</button>
+      <button class="hdr-btn" id="vm-close">关闭</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
