@@ -3,15 +3,19 @@
 #
 # 直接在路由器上执行：
 #   wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
-#   # 或:
 #   curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
 #
-# 环境变量覆盖：
+# 国内访问 GitHub 慢/失败时，脚本会自动按 GH_MIRRORS 列表回退到加速镜像，
+# 不需要任何配置。也可显式指定：
+#   PROXY=https://ghproxy.net sh install.sh        # 强制走某个加速前缀
+#   PROXY=none sh install.sh                       # 强制直连 GitHub
+#   GH_MIRRORS="https://your.mirror" sh install.sh # 替换内置镜像列表
+#
+# 其他环境变量：
 #   VERSION=v0.1.0     指定版本，默认拉 latest
 #   ARCH=linux_arm64   手动指定架构，默认按 uname -m + 字节序自动识别
 #   PORT=9099          Web UI 监听端口，默认 9099
-#   PROXY=...          下载前缀代理（如 https://ghproxy.com/），默认空
-#   FORCE=1            已安装时强制覆盖（默认升级时只替换二进制）
+#   FORCE=1            升级时强制覆盖 init 脚本（默认只换二进制）
 set -eu
 
 REPO="xxl6097/argus-app"
@@ -21,7 +25,11 @@ DATA_DIR="/etc/argusd"
 TMP_DIR="${TMPDIR:-/tmp}/argus-app-install.$$"
 
 PORT="${PORT:-9099}"
-PROXY="${PROXY:-}"
+
+# 内置 GitHub 加速镜像列表（顺序 = 优先级）。镜像可能临时下线，
+# 列表外用户也可通过 GH_MIRRORS="https://x https://y" 覆盖。
+GH_MIRRORS_DEFAULT="https://ghproxy.net https://gh-proxy.com https://mirror.ghproxy.com https://github.moeyy.xyz"
+GH_MIRRORS="${GH_MIRRORS:-$GH_MIRRORS_DEFAULT}"
 
 log()  { printf '\033[1;36m[argus-app]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[argus-app]\033[0m %s\n' "$*" >&2; }
@@ -44,7 +52,6 @@ detect_arch() {
         x86_64|amd64)
             echo linux_amd64 ;;
         mips|mipsel|mips64|mips64el)
-            # ELF e_ident[EI_DATA] (offset 5): 1=LSB(le), 2=MSB(be)
             target=/bin/busybox
             [ -r "$target" ] || target=/bin/sh
             byte=$(od -An -N1 -j5 -tu1 "$target" 2>/dev/null | tr -d ' \n' || true)
@@ -59,16 +66,46 @@ detect_arch() {
 }
 
 # ---------- 2. 下载工具 ----------
-fetch() {
-    url="$1"; dest="$2"
-    [ -n "$PROXY" ] && url="${PROXY%/}/$url"
+# 单次尝试：成功返回 0
+try_dl() {
+    url="$1"; dest="$2"; t="${3:-30}"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 -o "$dest" "$url"
+        curl -fsSL --connect-timeout 5 --max-time "$t" --retry 1 -o "$dest" "$url" 2>/dev/null
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$dest" "$url"
+        wget -q -T "$t" --tries=1 -O "$dest" "$url" 2>/dev/null
     else
         die "需要 curl 或 wget"
     fi
+}
+
+# 带镜像回退的 fetch：URL 是逻辑 URL（github.com/... 或 raw.githubusercontent.com/...）
+#   PROXY=none      → 只走直连
+#   PROXY=<前缀>    → 只走该前缀
+#   PROXY 未设置    → 先直连，失败再依次试 GH_MIRRORS
+fetch() {
+    raw="$1"; dest="$2"
+    case "${PROXY:-}" in
+        none|NONE|off|OFF)
+            try_dl "$raw" "$dest" && return 0
+            return 1 ;;
+        ?*)
+            try_dl "${PROXY%/}/$raw" "$dest" && return 0
+            return 1 ;;
+    esac
+    # auto 模式
+    if try_dl "$raw" "$dest" 12; then
+        return 0
+    fi
+    warn "直连失败，尝试加速镜像..."
+    for m in $GH_MIRRORS; do
+        log "  → $m"
+        if try_dl "${m%/}/$raw" "$dest"; then
+            log "镜像 $m 可用，本次安装继续走该前缀"
+            PROXY="$m"   # 后续请求复用同一镜像，避免每个文件都重探一遍
+            return 0
+        fi
+    done
+    return 1
 }
 
 # ---------- 3. 版本解析 ----------
@@ -77,23 +114,48 @@ resolve_version() {
         echo "$VERSION"
         return
     fi
-    # latest 重定向
-    base="https://github.com/${REPO}/releases/latest"
-    [ -n "$PROXY" ] && base="${PROXY%/}/$base"
-    if command -v curl >/dev/null 2>&1; then
-        url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$base" 2>/dev/null || true)
+    # 拉一份 release 跳转链接来反解版本号。
+    # 不能用 latest/download/install.sh 因为 v0.1.0 等老 tag 上没有这个文件。
+    redirect_probe="$TMP_DIR/.redirect"
+    candidates="https://github.com/${REPO}/releases/latest"
+    # 先试直连
+    if [ "${PROXY:-}" = "" ] || [ "${PROXY:-}" = "none" ]; then
+        url=$(curl_redirect "$candidates" || echo "")
     else
-        url=$(wget --max-redirect=10 --spider -S "$base" 2>&1 | awk '/Location:/{u=$2} END{print u}')
+        url=$(curl_redirect "${PROXY%/}/$candidates" || echo "")
+    fi
+    if [ -z "$url" ]; then
+        # 直连不行 → 走镜像
+        for m in $GH_MIRRORS; do
+            url=$(curl_redirect "${m%/}/$candidates" || echo "")
+            if [ -n "$url" ]; then
+                PROXY="$m"
+                break
+            fi
+        done
     fi
     tag=$(echo "$url" | sed -n 's@.*/tag/\(v[^/]*\).*@\1@p')
     [ -n "$tag" ] || die "无法解析最新版本号，请用 VERSION=vX.Y.Z 指定"
     echo "$tag"
 }
 
+curl_redirect() {
+    u="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSLI --connect-timeout 5 --max-time 10 -o /dev/null -w '%{url_effective}' "$u" 2>/dev/null
+    else
+        wget --max-redirect=10 --spider -S -T 10 "$u" 2>&1 \
+            | awk '/Location:/{u=$2} END{print u}'
+    fi
+}
+
 # ---------- 4. 主流程 ----------
 main() {
     [ "$(id -u)" = "0" ] || die "需要 root（直接 ssh 到路由器，或 sudo 执行）"
     need uname; need tar; need od
+
+    mkdir -p "$TMP_DIR"
+    trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
     arch=$(detect_arch)
     version=$(resolve_version)
@@ -103,17 +165,19 @@ main() {
     log "目标版本: $version"
     log "目标架构: $arch"
     log "下载文件: $pkg"
+    if [ -n "${PROXY:-}" ] && [ "$PROXY" != "none" ]; then
+        log "加速前缀: $PROXY"
+    fi
 
-    mkdir -p "$TMP_DIR"
-    trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
-
-    # 下载 + 校验
-    fetch "$base_url/$pkg"            "$TMP_DIR/$pkg"
-    fetch "$base_url/SHA256SUMS"      "$TMP_DIR/SHA256SUMS" || warn "无 SHA256SUMS，跳过校验"
-    if [ -s "$TMP_DIR/SHA256SUMS" ] && command -v sha256sum >/dev/null 2>&1; then
-        log "校验 SHA256..."
-        ( cd "$TMP_DIR" && grep " $pkg\$" SHA256SUMS | sha256sum -c - ) \
-            || die "SHA256 校验失败"
+    fetch "$base_url/$pkg" "$TMP_DIR/$pkg" || die "下载主包失败：$pkg"
+    if fetch "$base_url/SHA256SUMS" "$TMP_DIR/SHA256SUMS"; then
+        if command -v sha256sum >/dev/null 2>&1; then
+            log "校验 SHA256..."
+            ( cd "$TMP_DIR" && grep " $pkg\$" SHA256SUMS | sha256sum -c - ) \
+                || die "SHA256 校验失败"
+        fi
+    else
+        warn "无 SHA256SUMS（旧版本可能未发布），跳过校验"
     fi
 
     log "解压..."
@@ -121,14 +185,12 @@ main() {
     src="$TMP_DIR/argus-app"
     [ -x "$src/argus-app" ] || die "压缩包内未找到可执行文件"
 
-    # 已安装则停服务
     if [ -x "$INIT_DIR/argus-app" ]; then
         log "停止已运行的实例..."
         "$INIT_DIR/argus-app" stop 2>/dev/null || true
         sleep 1
     fi
 
-    # 安装
     log "安装二进制 → $INSTALL_DIR/argus-app"
     install -m 0755 "$src/argus-app" "$INSTALL_DIR/argus-app"
 
@@ -141,7 +203,6 @@ main() {
 
     mkdir -p "$DATA_DIR" "$DATA_DIR/history"
 
-    # 启动
     log "启用开机自启 + 启动服务..."
     "$INIT_DIR/argus-app" enable
     LISTEN="0.0.0.0:${PORT}" "$INIT_DIR/argus-app" start

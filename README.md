@@ -61,7 +61,7 @@ wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.s
 curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
 ```
 
-脚本会自动识别架构、下载对应包、校验 SHA256、安装 init 脚本、启用开机自启并启动服务。常用环境变量：
+脚本会自动识别架构、下载对应包、校验 SHA256、安装 init 脚本、启用开机自启并启动服务。**直连 GitHub 失败时会自动回退到内置加速镜像列表**，国内环境也能一行搞定。常用环境变量：
 
 ```sh
 # 指定版本（默认拉 latest）
@@ -70,8 +70,14 @@ VERSION=v0.1.0 sh install.sh
 # 改监听端口
 PORT=18099 sh install.sh
 
-# 国内网络慢可加代理前缀（gh 镜像）
-PROXY=https://ghproxy.com sh install.sh
+# 强制走某个加速前缀（默认是先直连，失败自动 fallback 到内置镜像）
+PROXY=https://ghproxy.net sh install.sh
+
+# 强制只走 GitHub 直连（适合海外服务器）
+PROXY=none sh install.sh
+
+# 自定义镜像列表（空格分隔，按顺序回退）
+GH_MIRRORS="https://your.mirror https://another.mirror" sh install.sh
 
 # 强制覆盖已有 init 脚本（默认升级时只换二进制）
 FORCE=1 sh install.sh
