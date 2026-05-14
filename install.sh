@@ -51,15 +51,10 @@ detect_arch() {
             echo linux_armv7 ;;
         x86_64|amd64)
             echo linux_amd64 ;;
-        mips|mipsel|mips64|mips64el)
-            target=/bin/busybox
-            [ -r "$target" ] || target=/bin/sh
-            byte=$(od -An -N1 -j5 -tu1 "$target" 2>/dev/null | tr -d ' \n' || true)
-            if [ "$byte" = "1" ]; then
-                echo linux_mipsle_softfloat
-            else
-                echo linux_mips_softfloat
-            fi ;;
+        mips|mips64)
+            echo linux_mips_softfloat ;;
+        mipsel|mips64el)
+            echo linux_mipsle_softfloat ;;
         *)
             die "不支持的架构: $machine（可用 ARCH=linux_xxx 手动指定）" ;;
     esac
@@ -152,7 +147,7 @@ curl_redirect() {
 # ---------- 4. 主流程 ----------
 main() {
     [ "$(id -u)" = "0" ] || die "需要 root（直接 ssh 到路由器，或 sudo 执行）"
-    need uname; need tar; need od
+    need uname; need tar
 
     mkdir -p "$TMP_DIR"
     trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
