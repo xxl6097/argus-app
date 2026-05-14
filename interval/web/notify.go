@@ -93,6 +93,11 @@ func (s *NotifyStore) load() {
 	if err != nil {
 		return
 	}
+	// Tighten file permissions on every load — older versions wrote
+	// 0644, and the file holds ntfy credentials. Best-effort: ignore
+	// chmod errors (Windows / network FS / etc.) since the data still
+	// loads correctly.
+	_ = os.Chmod(s.path, 0o600)
 	var raw map[string]NotifyConfig
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return
@@ -145,23 +150,26 @@ func (s *NotifyStore) Lookup(mac string) (NotifyConfig, bool) {
 	return NotifyConfig{}, false
 }
 
-// Set stores or replaces the config for a MAC. Setting a config where
-// every field is empty removes the entry entirely.
+// Set stores or replaces the config for a MAC. Whitespace-only fields
+// are normalized to empty before persistence.
+//
+// Set NEVER deletes an existing row — even when every field comes in
+// empty. The on-disk shape is the user's responsibility (managed
+// exclusively through the dashboard's save/delete buttons), so we make
+// it impossible for code paths like "alias rename" or "subscription
+// reconcile" to silently nuke a row by passing an empty cfg. To remove
+// a row, callers must invoke Delete(mac) explicitly.
 func (s *NotifyStore) Set(mac string, cfg NotifyConfig) error {
 	macKey := normalizeMAC(mac)
 	if macKey == "" {
 		return errors.New("web: notify mac required")
 	}
-	// Trim all string fields so whitespace-only values don't pass the
-	// "is empty" check below.
 	cfg.WebhookURL = strings.TrimSpace(cfg.WebhookURL)
 	cfg.NtfyServer = strings.TrimSpace(cfg.NtfyServer)
 	cfg.NtfyUsername = strings.TrimSpace(cfg.NtfyUsername)
 	cfg.NtfyPassword = strings.TrimSpace(cfg.NtfyPassword)
 	cfg.NtfyReqTopic = strings.TrimSpace(cfg.NtfyReqTopic)
 	cfg.NtfyResTopic = strings.TrimSpace(cfg.NtfyResTopic)
-	// Basic URL sanity — reject obvious typos early so silent failures
-	// don't bite the user later.
 	if cfg.WebhookURL != "" {
 		if _, err := url.ParseRequestURI(cfg.WebhookURL); err != nil {
 			return fmt.Errorf("web: webhook_url invalid: %w", err)
@@ -172,26 +180,43 @@ func (s *NotifyStore) Set(mac string, cfg NotifyConfig) error {
 			return fmt.Errorf("web: ntfy_server invalid: %w", err)
 		}
 	}
-	empty := cfg.WebhookURL == "" && cfg.NtfyServer == "" &&
-		cfg.NtfyReqTopic == "" && cfg.NtfyResTopic == ""
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := s.keyFor(mac)
 	if key == "" {
 		key = macKey
 	}
-	if empty {
-		delete(s.data, key)
-		// Also clean up legacy MAC-keyed rows.
+	s.data[key] = cfg
+	// If we now have an alias-keyed row, drop any stale legacy MAC-keyed
+	// duplicate so future Lookups don't return the wrong copy. This is
+	// an in-place migration, not a deletion of user content.
+	if key != macKey {
 		delete(s.data, macKey)
 		delete(s.data, strings.ToUpper(macKey))
-	} else {
-		s.data[key] = cfg
-		if key != macKey {
-			delete(s.data, macKey)
-			delete(s.data, strings.ToUpper(macKey))
-		}
 	}
+	return s.persistLocked()
+}
+
+// Delete removes the row for a MAC entirely. This is the ONLY API
+// that drops an entry from notifications.json — every other write
+// path (Set, subscription reconcile, alias rename) is required to
+// preserve existing rows.
+//
+// Returns nil even when no row existed for the MAC, so the dashboard
+// "remove" button is idempotent from the caller's perspective.
+func (s *NotifyStore) Delete(mac string) error {
+	macKey := normalizeMAC(mac)
+	if macKey == "" {
+		return errors.New("web: notify mac required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.keyFor(mac)
+	if key != "" {
+		delete(s.data, key)
+	}
+	delete(s.data, macKey)
+	delete(s.data, strings.ToUpper(macKey))
 	return s.persistLocked()
 }
 
@@ -244,7 +269,11 @@ func (s *NotifyStore) persistLocked() error {
 		_ = os.MkdirAll(dir, 0o755)
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	// 0600: notifications.json holds ntfy basic-auth credentials in
+	// cleartext; we don't want non-root readers on the router. Atomic
+	// write via tmp + rename so a crash mid-write can't truncate the
+	// existing file.
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path)

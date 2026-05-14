@@ -1396,7 +1396,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 			writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
 			return
 		}
-		if err := s.notifyStore.Set(mac, NotifyConfig{}); err != nil {
+		if err := s.notifyStore.Delete(mac); err != nil {
 			writeJSONErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
