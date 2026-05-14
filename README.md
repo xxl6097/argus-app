@@ -12,6 +12,27 @@
 
 > 名字虽叫 `argus-app`，仪表板上的对外标题已经改成了 **WiFi 考勤 · 工时统计**。
 
+## 目录
+
+- [界面截图](#界面截图)
+- [快速开始](#快速开始)
+- [安装教程](#安装教程)
+  - [一、确认架构](#一确认架构)
+  - [二、下载发行包](#二下载发行包)
+  - [三、安装到系统目录](#三安装到系统目录)
+  - [四、启动并设置开机自启](#四启动并设置开机自启)
+  - [五、首次配置](#五首次配置)
+  - [六、升级与卸载](#六升级与卸载)
+  - [七、故障排查](#七故障排查)
+- [设计目标](#设计目标)
+- [项目结构](#项目结构)
+- [后端能力](#后端能力)
+- [Web UI 功能](#web-ui-功能)
+- [安装与部署](#安装与部署)
+- [HTTP API 一览](#http-api-一览)
+- [开发约定](#开发约定)
+- [许可](#许可)
+
 ## 界面截图
 
 <div align="center">
@@ -45,6 +66,149 @@ ssh root@192.168.1.1 'chmod +x /usr/bin/argus-app /etc/init.d/argus-app && /etc/
 ### 方式 B：从源码构建
 
 见下面 [安装与部署](#安装与部署) 一节的 `buildAndUpRun.sh` 脚本。
+
+## 安装教程
+
+完整的从零到运行流程，针对预编译 release 包。
+
+### 一、确认架构
+
+SSH 到路由器，运行：
+
+```bash
+uname -m
+```
+
+对应关系：
+
+| `uname -m` 输出 | 应下载的包 | 典型设备 |
+|---|---|---|
+| `aarch64` | `linux_arm64` | MT7981、IPQ60xx、RK3568 等 ARM64 路由 |
+| `armv7l` | `linux_armv7` | MT7621、Raspberry Pi 2/3、老款 ARMv7 |
+| `mips` | `linux_mips_softfloat` | 大端 MIPS（部分老款联发科） |
+| `mipsel` 或 `mips64el` | `linux_mipsle_softfloat` | 小端 MIPS（MT7620/MT7628 等） |
+| `x86_64` | `linux_amd64` | x86 软路由（J4125、N5105、N100 等） |
+
+> 拿不准时打 `aarch64` 包试一下，跑不起来再换。
+
+### 二、下载发行包
+
+到 [Releases](https://github.com/xxl6097/argus-app/releases/latest) 找到对应架构的 `.tar.gz`。
+
+**方式 1：从你的电脑下载并 scp 上传**（推荐，路由器存储紧）
+
+```bash
+# 本机执行
+TAG=v0.1.0   # 替换成最新 tag
+ARCH=arm64   # 替换成你的架构
+wget "https://github.com/xxl6097/argus-app/releases/download/${TAG}/argus-app_${TAG}_linux_${ARCH}.tar.gz"
+
+tar xzf argus-app_${TAG}_linux_${ARCH}.tar.gz
+scp argus-app/argus-app          root@192.168.1.1:/tmp/
+scp argus-app/packaging/openwrt/argus-app.init root@192.168.1.1:/tmp/argus-app.init
+```
+
+**方式 2：路由器直接下载**（仅适用 OpenWrt 自带 wget-ssl 且有公网）
+
+```bash
+# 路由器上执行
+cd /tmp
+TAG=v0.1.0
+ARCH=arm64
+wget "https://github.com/xxl6097/argus-app/releases/download/${TAG}/argus-app_${TAG}_linux_${ARCH}.tar.gz"
+tar xzf argus-app_${TAG}_linux_${ARCH}.tar.gz
+cd argus-app
+```
+
+### 三、安装到系统目录
+
+SSH 到路由器后：
+
+```bash
+# 二进制
+install -m 0755 /tmp/argus-app /usr/bin/argus-app
+# 或上面方式 2 走这一行：
+# install -m 0755 /tmp/argus-app/argus-app /usr/bin/argus-app
+
+# init 脚本
+install -m 0755 /tmp/argus-app.init /etc/init.d/argus-app
+# 或上面方式 2：
+# install -m 0755 /tmp/argus-app/packaging/openwrt/argus-app.init /etc/init.d/argus-app
+
+# 数据目录（持久化 JSON 都在这里）
+mkdir -p /etc/argusd /etc/argusd/history
+```
+
+校验一下：
+
+```bash
+argus-app -version
+# 输出形如：argus-app v0.1.0 (commit abc1234, built 2026-05-14T...)
+```
+
+### 四、启动并设置开机自启
+
+```bash
+/etc/init.d/argus-app enable    # 开机自启
+/etc/init.d/argus-app start     # 立即启动
+
+# 查看状态
+/etc/init.d/argus-app status
+pidof argus-app
+logread | grep argus-app | tail -20
+```
+
+成功后浏览器访问 `http://<路由器 IP>:9099`，例如 `http://192.168.1.1:9099`。
+
+> **想改监听端口或参数？** 编辑 `/etc/init.d/argus-app`，修改 `LISTEN=` 或 `procd_set_param command` 那一段后 `/etc/init.d/argus-app restart`。
+
+### 五、首次配置
+
+打开 Web UI 后建议按这个顺序操作：
+
+1. **设置工作时间**：右上角任意打卡设备的「工作时长」tab → 「设置」按钮 → 填写 `work_start` / `work_end`，保存。
+2. **挑选打卡设备**：在主表里点设备行最右的「**设为打卡**」徽章，把你常用的手机 / 笔记本加为打卡设备。
+3. **重命名设备**（可选）：每行「✎」按钮起一个易记名字（`iphone17`、`work-laptop`），后续所有持久化文件都会用别名做 key，比 MAC 友好。
+4. **配置通知**（可选）：进入设备详情 → 「⚙ 信息设置」tab，填 Webhook / ntfy 服务器，保存即生效。
+5. **设静态 IP**（可选）：每行 IP 旁边「📌」按钮 → 弹窗勾「立即生效」可以瞬断一次让设备拿到新 IP。
+
+### 六、升级与卸载
+
+**升级**：
+
+```bash
+/etc/init.d/argus-app stop
+install -m 0755 /tmp/argus-app /usr/bin/argus-app
+/etc/init.d/argus-app start
+# /etc/argusd/ 下的数据无需任何处理，新版自动兼容旧格式
+```
+
+**卸载**（保留数据）：
+
+```bash
+/etc/init.d/argus-app stop
+/etc/init.d/argus-app disable
+rm /usr/bin/argus-app /etc/init.d/argus-app
+```
+
+**彻底清除**（含数据）：
+
+```bash
+rm -rf /etc/argusd
+```
+
+### 七、故障排查
+
+| 现象 | 检查方向 |
+|---|---|
+| 启动后 `pidof argus-app` 为空 | `logread | tail -30` 看错误；常见是端口被占用或架构不匹配（`-bash: ./argus-app: cannot execute binary file`） |
+| 浏览器打不开 9099 | 防火墙是否拦截 LAN：`uci show firewall | grep input`；或换个端口 |
+| 上下线不刷新 | 本工具依赖 [argusd](https://github.com/xxl6097/argusd) 的探测能力，确认路由器有可用数据源（`hostapd-cli` / `dhcp.leases` 至少一种） |
+| 工时一直是 0 | 「设置」里 `work_start` / `work_end` 有没有保存？设备是否加入打卡集合？数据目录 `/etc/argusd/history/` 是否可写？ |
+| 节假日不更新 | 路由器是否能访问 `timor.tech`？`logread | grep -i holiday`；可手动在「工作时长」tab 上切换日子类型作为应急 |
+| 通知没收到 | `/api/notifications/test` 触发一次合成事件，看 webhook 服务端 / ntfy 客户端有无收到；URL 是否带协议前缀 `https://` |
+
+---
 
 ## 设计目标
 
