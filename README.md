@@ -61,6 +61,10 @@ wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.s
 curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
 ```
 
+```shell
+wget -O- https://ghproxy.net/https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+```
+
 脚本会自动识别架构、下载对应包、校验 SHA256、安装 init 脚本、启用开机自启并启动服务。**直连 GitHub 失败时会自动回退到内置加速镜像列表**，国内环境也能一行搞定。常用环境变量：
 
 ```sh
