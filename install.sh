@@ -36,7 +36,9 @@ TMP_DIR="${TMPDIR:-/tmp}/argus-app-install.$$"
 PORT="${PORT:-9099}"
 
 # 内置 GitHub 加速镜像列表 (顺序 = 优先级)。可被 GH_MIRRORS 覆盖。
-GH_MIRRORS_DEFAULT="https://ghproxy.net https://gh-proxy.com https://mirror.ghproxy.com https://github.moeyy.xyz"
+# 排序经验: gh-proxy.com 实测对 release 资源 + api.github.com 都稳定;
+# ghproxy.net 间歇性 502; mirror.ghproxy.com / github.moeyy.xyz 偶尔超时。
+GH_MIRRORS_DEFAULT="https://gh-proxy.com https://mirror.ghproxy.com https://ghproxy.net https://github.moeyy.xyz"
 GH_MIRRORS="${GH_MIRRORS:-$GH_MIRRORS_DEFAULT}"
 
 log()  { printf '\033[1;36m[argus-app]\033[0m %s\n' "$*"; }

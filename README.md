@@ -61,8 +61,17 @@ wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.s
 curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
 ```
 
-```shell
-wget -O- https://ghproxy.net/https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+**国内 GitHub 直连不通时**，下面三条任选一条，**安装脚本自己后续会再走加速镜像下载二进制**：
+
+```sh
+# 首选 — jsDelivr (CloudFlare CDN, 走仓库 main 分支)
+wget -O- https://cdn.jsdelivr.net/gh/xxl6097/argus-app@main/install.sh | sh
+
+# 备选 — gh-proxy.com (走 GitHub Releases, 拿到的就是 latest 版本)
+wget -O- https://gh-proxy.com/https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+
+# 备选 — gh-proxy 走 raw (不依赖 Release 是否发布)
+wget -O- https://gh-proxy.com/https://raw.githubusercontent.com/xxl6097/argus-app/main/install.sh | sh
 ```
 
 脚本会自动识别架构、下载对应包、校验 SHA256、安装 init 脚本、启用开机自启并启动服务。**直连 GitHub 失败时会自动回退到内置加速镜像列表**，国内环境也能一行搞定。常用环境变量：
@@ -75,7 +84,7 @@ VERSION=v0.1.0 sh install.sh
 PORT=18099 sh install.sh
 
 # 强制走某个加速前缀（默认是先直连，失败自动 fallback 到内置镜像）
-PROXY=https://ghproxy.net sh install.sh
+PROXY=https://gh-proxy.com sh install.sh
 
 # 强制只走 GitHub 直连（适合海外服务器）
 PROXY=none sh install.sh
