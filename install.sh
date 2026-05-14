@@ -130,6 +130,12 @@ resolve_version() {
 }
 
 # ---------- 4. 主流程 ----------
+# 类似 install -m 0755 SRC DST, 但只依赖 busybox 自带的 cp + chmod。
+install_bin() {
+    cp -f "$1" "$2" || die "拷贝失败: $1 → $2"
+    chmod 0755 "$2" || die "chmod 失败: $2"
+}
+
 main() {
     [ "$(id -u)" = "0" ] || die "需要 root（直接 ssh 到路由器，或 sudo 执行）"
     need uname; need tar
@@ -173,11 +179,11 @@ main() {
     fi
 
     log "安装二进制 → $INSTALL_DIR/argus-app"
-    install -m 0755 "$src/argus-app" "$INSTALL_DIR/argus-app"
+    install_bin "$src/argus-app" "$INSTALL_DIR/argus-app"
 
     if [ ! -f "$INIT_DIR/argus-app" ] || [ "${FORCE:-0}" = "1" ]; then
         log "安装 init 脚本 → $INIT_DIR/argus-app"
-        install -m 0755 "$src/packaging/openwrt/argus-app.init" "$INIT_DIR/argus-app"
+        install_bin "$src/packaging/openwrt/argus-app.init" "$INIT_DIR/argus-app"
     else
         log "保留现有 init 脚本（FORCE=1 可强制覆盖）"
     fi
