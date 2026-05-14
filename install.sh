@@ -13,9 +13,10 @@
 #
 # 其他环境变量：
 #   VERSION=v0.1.0     指定版本，默认拉 latest
-#   ARCH=linux_arm64   手动指定架构，默认按 uname -m + 字节序自动识别
+#   ARCH=linux_arm64   手动指定架构，默认按 uname -m 自动识别
 #   PORT=9099          Web UI 监听端口，默认 9099
 #   FORCE=1            升级时强制覆盖 init 脚本（默认只换二进制）
+#   SKIP_OS_CHECK=1    跳过 OpenWrt / procd 健全性检查（自担风险）
 set -eu
 
 REPO="xxl6097/argus-app"
@@ -37,6 +38,20 @@ die()  { printf '\033[1;31m[argus-app]\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"; }
 
+# ---------- 0. 平台检查 ----------
+check_openwrt() {
+    [ "${SKIP_OS_CHECK:-0}" = "1" ] && return
+    if [ ! -r /etc/openwrt_release ] && [ ! -r /etc/os-release ]; then
+        warn "未检测到 /etc/openwrt_release，可能不是 OpenWrt 系统"
+    fi
+    [ -d "$INIT_DIR" ] || die "$INIT_DIR 不存在，本脚本仅支持 OpenWrt + procd"
+    [ -r /etc/rc.common ] || warn "/etc/rc.common 缺失，init 脚本可能无法工作"
+    # /usr/bin 只读检测（部分定制固件 squashfs root 是只读的）
+    if [ -d "$INSTALL_DIR" ] && ! ( touch "$INSTALL_DIR/.argus-write-test.$$" 2>/dev/null && rm -f "$INSTALL_DIR/.argus-write-test.$$" ); then
+        die "$INSTALL_DIR 不可写。如是只读 squashfs 固件，请先 mount -o remount,rw / 或换 -overlay 路径"
+    fi
+}
+
 # ---------- 1. 架构识别 ----------
 detect_arch() {
     if [ -n "${ARCH:-}" ]; then
@@ -45,29 +60,24 @@ detect_arch() {
     fi
     machine=$(uname -m)
     case "$machine" in
-        aarch64|arm64)
-            echo linux_arm64 ;;
-        armv7l|armv7|armv6l)
-            echo linux_armv7 ;;
-        x86_64|amd64)
-            echo linux_amd64 ;;
-        mips|mips64)
-            echo linux_mips_softfloat ;;
-        mipsel|mips64el)
-            echo linux_mipsle_softfloat ;;
-        *)
-            die "不支持的架构: $machine（可用 ARCH=linux_xxx 手动指定）" ;;
+        aarch64|arm64)         echo linux_arm64 ;;
+        armv7l|armv7|armv6l)   echo linux_armv7 ;;
+        x86_64|amd64)          echo linux_amd64 ;;
+        mips|mips64)           echo linux_mips_softfloat ;;
+        mipsel|mips64el)       echo linux_mipsle_softfloat ;;
+        *) die "不支持的架构: $machine（可用 ARCH=linux_xxx 手动指定）" ;;
     esac
 }
 
 # ---------- 2. 下载工具 ----------
-# 单次尝试：成功返回 0
+# 尽量贴 busybox: 不用长选项, 不用 --tries / --retry。
 try_dl() {
     url="$1"; dest="$2"; t="${3:-30}"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time "$t" --retry 1 -o "$dest" "$url" 2>/dev/null
+        curl -fsSL --connect-timeout 5 --max-time "$t" -o "$dest" "$url" 2>/dev/null
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T "$t" --tries=1 -O "$dest" "$url" 2>/dev/null
+        # busybox wget: -q 静默, -T 超时秒, -O 输出。不要加 --tries=。
+        wget -q -T "$t" -O "$dest" "$url" 2>/dev/null
     else
         die "需要 curl 或 wget"
     fi
@@ -87,7 +97,6 @@ fetch() {
             try_dl "${PROXY%/}/$raw" "$dest" && return 0
             return 1 ;;
     esac
-    # auto 模式
     if try_dl "$raw" "$dest" 12; then
         return 0
     fi
@@ -96,7 +105,7 @@ fetch() {
         log "  → $m"
         if try_dl "${m%/}/$raw" "$dest"; then
             log "镜像 $m 可用，本次安装继续走该前缀"
-            PROXY="$m"   # 后续请求复用同一镜像，避免每个文件都重探一遍
+            PROXY="$m"
             return 0
         fi
     done
@@ -117,8 +126,8 @@ resolve_version() {
     candidates="$api"
     case "${PROXY:-}" in
         none|NONE|off|OFF) ;;
-        ?*)               candidates="${PROXY%/}/$api $candidates" ;;
-        *)                candidates="$candidates https://gh-proxy.com/$api" ;;
+        ?*) candidates="${PROXY%/}/$api $candidates" ;;
+        *)  candidates="$candidates https://gh-proxy.com/$api" ;;
     esac
     for u in $candidates; do
         if try_dl "$u" "$json" 15 && [ -s "$json" ]; then
@@ -129,19 +138,65 @@ resolve_version() {
     die "无法解析最新版本号，请用 VERSION=vX.Y.Z 指定"
 }
 
-# ---------- 4. 主流程 ----------
+# ---------- 4. 工具 ----------
 # 类似 install -m 0755 SRC DST, 但只依赖 busybox 自带的 cp + chmod。
 install_bin() {
     cp -f "$1" "$2" || die "拷贝失败: $1 → $2"
     chmod 0755 "$2" || die "chmod 失败: $2"
 }
 
+# tar -xzf 的兜底：如果 busybox tar 不带 gzip 支持，退回 gunzip 管道。
+extract_tgz() {
+    archive="$1"; dest="$2"
+    if tar -xzf "$archive" -C "$dest" 2>/dev/null; then
+        return 0
+    fi
+    if command -v gunzip >/dev/null 2>&1; then
+        gunzip -c "$archive" | tar -xf - -C "$dest"
+    else
+        die "tar 不支持 gzip 且系统无 gunzip，无法解压 $archive"
+    fi
+}
+
+# 等待进程起来（procd 启动 + respawn 可能有几秒抖动）。
+wait_for_proc() {
+    name="$1"; tries=0
+    while [ $tries -lt 6 ]; do
+        if pidof "$name" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+# 取路由器 LAN IP 用于结束语提示。多重 fallback, 全空时占位 <router-ip>。
+router_lan_ip() {
+    if command -v uci >/dev/null 2>&1; then
+        ip=$(uci -q get network.lan.ipaddr 2>/dev/null || true)
+        [ -n "$ip" ] && { echo "$ip"; return; }
+    fi
+    if command -v ip >/dev/null 2>&1; then
+        ip=$(ip -4 -o addr show 2>/dev/null | awk '$2!="lo"{split($4,a,"/"); print a[1]; exit}')
+        [ -n "$ip" ] && { echo "$ip"; return; }
+    fi
+    if command -v ifconfig >/dev/null 2>&1; then
+        ip=$(ifconfig br-lan 2>/dev/null | awk '/inet (addr:)?/{ for(i=1;i<=NF;i++) if($i ~ /^(addr:)?[0-9]+\./){gsub(/^addr:/,"",$i); print $i; exit} }')
+        [ -n "$ip" ] && { echo "$ip"; return; }
+    fi
+    echo "<router-ip>"
+}
+
+# ---------- 5. 主流程 ----------
 main() {
     [ "$(id -u)" = "0" ] || die "需要 root（直接 ssh 到路由器，或 sudo 执行）"
     need uname; need tar
 
     mkdir -p "$TMP_DIR"
     trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+
+    check_openwrt
 
     arch=$(detect_arch)
     resolve_version
@@ -160,22 +215,30 @@ main() {
     if fetch "$base_url/SHA256SUMS" "$TMP_DIR/SHA256SUMS"; then
         if command -v sha256sum >/dev/null 2>&1; then
             log "校验 SHA256..."
-            ( cd "$TMP_DIR" && grep " $pkg\$" SHA256SUMS | sha256sum -c - ) \
-                || die "SHA256 校验失败"
+            expected=$(grep " $pkg\$" "$TMP_DIR/SHA256SUMS" | awk '{print $1}')
+            [ -n "$expected" ] || die "SHA256SUMS 中找不到 $pkg 条目"
+            actual=$(cd "$TMP_DIR" && sha256sum "$pkg" | awk '{print $1}')
+            [ "$expected" = "$actual" ] || die "SHA256 不匹配 (expected=$expected got=$actual)"
+        else
+            warn "系统无 sha256sum，跳过校验"
         fi
     else
         warn "无 SHA256SUMS（旧版本可能未发布），跳过校验"
     fi
 
     log "解压..."
-    tar -xzf "$TMP_DIR/$pkg" -C "$TMP_DIR"
+    extract_tgz "$TMP_DIR/$pkg" "$TMP_DIR"
     src="$TMP_DIR/argus-app"
     [ -x "$src/argus-app" ] || die "压缩包内未找到可执行文件"
 
     if [ -x "$INIT_DIR/argus-app" ]; then
         log "停止已运行的实例..."
         "$INIT_DIR/argus-app" stop 2>/dev/null || true
-        sleep 1
+        # 等老进程真正退出，避免 cp 二进制时 ETXTBSY
+        i=0
+        while pidof argus-app >/dev/null 2>&1 && [ $i -lt 5 ]; do
+            sleep 1; i=$((i + 1))
+        done
     fi
 
     log "安装二进制 → $INSTALL_DIR/argus-app"
@@ -191,19 +254,18 @@ main() {
     mkdir -p "$DATA_DIR" "$DATA_DIR/history"
 
     log "启用开机自启 + 启动服务..."
-    "$INIT_DIR/argus-app" enable
+    "$INIT_DIR/argus-app" enable 2>/dev/null || warn "enable 失败（可能已启用，忽略）"
     LISTEN="0.0.0.0:${PORT}" "$INIT_DIR/argus-app" start
 
-    sleep 2
-    if pidof argus-app >/dev/null 2>&1; then
-        ip=$(uci -q get network.lan.ipaddr 2>/dev/null \
-             || ip -4 -o addr show 2>/dev/null | awk '$2!="lo"{split($4,a,"/"); print a[1]; exit}')
-        [ -n "$ip" ] || ip="<router-ip>"
+    if wait_for_proc argus-app; then
+        ip=$(router_lan_ip)
         log "启动成功 ✓  浏览器访问  http://${ip}:${PORT}/"
         log "查看日志:  logread -f | grep argus-app"
         log "停止服务:  /etc/init.d/argus-app stop"
+        log "卸载:      /etc/init.d/argus-app stop && /etc/init.d/argus-app disable && rm -f $INSTALL_DIR/argus-app $INIT_DIR/argus-app"
     else
-        warn "进程未起来，看一下日志：logread | grep argus-app | tail -30"
+        warn "进程未起来，请查看日志：logread | grep argus-app | tail -30"
+        warn "或直接前台运行排查：$INSTALL_DIR/argus-app -listen 0.0.0.0:${PORT}"
         exit 1
     fi
 }
