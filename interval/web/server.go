@@ -1514,6 +1514,44 @@ func (s *Server) refreshNotifySubs() {
 // chineseWeekdays maps Go's time.Weekday to Chinese day names.
 var chineseWeekdays = []string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
 
+// historySyslogLabels maps the SyslogKind.String() values that the
+// argusd library emits to the same Chinese pills the dashboard renders.
+// Keep in sync with HISTORY_SYSLOG_LABELS in dashboard.html.
+var historySyslogLabels = map[string]string{
+	"WIFI_CONNECT":    "无线接入",
+	"WPA_COMPLETE":    "认证完成",
+	"DHCP_ACK":        "DHCP 分配",
+	"MACTABLE_INSERT": "MAC 表新增",
+	"WIFI_DISCONNECT": "无线断开",
+	"DEAUTH":          "认证踢出",
+	"MACTABLE_DELETE": "MAC 表移除",
+}
+
+// sourceLabel renders an attribution tag (as produced by Server.sourceFor)
+// into a human-readable Chinese phrase suitable for webhook / ntfy bodies.
+// Returns the empty string when src is empty so callers can soft-skip.
+func sourceLabel(src string) string {
+	if src == "" {
+		return ""
+	}
+	if src == "seed" {
+		return "启动快照"
+	}
+	if i := strings.Index(src, ":"); i > 0 {
+		head, tail := src[:i], src[i+1:]
+		switch head {
+		case "syslog":
+			if v, ok := historySyslogLabels[tail]; ok {
+				return v
+			}
+			return tail
+		case "fetcher":
+			return tail + " 轮询"
+		}
+	}
+	return src
+}
+
 // dispatchNotify formats a markdown payload and ships it to the
 // per-device webhook/ntfy destinations. No-op when the device has no
 // notify config or notifier isn't enabled.
@@ -1544,19 +1582,33 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	isPunch := s.settings != nil && s.settings.IsPunch(mac)
 
 	when := nonZeroTime(e.Time)
-	//payload := eventPayload(e)
-	//payload["alias"] = alias
-	//payload["display_name"] = displayName
-	//payload["is_punch"] = isPunch
+	// Reuse the same attribution that the history store uses, so the
+	// webhook body matches the timeline pill exactly. sourceFor() peeks
+	// at the syslog hint cache; we have to call it BEFORE OnEvent's
+	// history.Record runs (otherwise the hint TTL window closes), but
+	// since dispatchNotify itself runs from inside OnEvent right after
+	// Record, the timestamps line up identically.
+	source := s.sourceFor(e)
+	sourceText := sourceLabel(source)
 
-	payload := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch)
+	payload := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch, sourceText)
+	// Surface the raw + label as top-level fields too, so generic JSON
+	// webhooks (no markdown rendering) can still see what triggered it.
+	if source != "" {
+		payload["source"] = source
+	}
+	if sourceText != "" {
+		payload["source_label"] = sourceText
+	}
 	s.notifier.Dispatch(mac, cfg, payload, e.Kind.String())
 }
 
 // formatNotifyMarkdown renders the per-device markdown body. Punch
 // devices on ONLINE get worktime stats (today's overtime + month
 // total); everything else gets the lightweight "上线啦/下线啦" form.
-func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName, alias, mac string, isPunch bool) map[string]any {
+// sourceText is the Chinese attribution (sourceLabel(...)); empty
+// string skips the line.
+func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName, alias, mac string, isPunch bool, sourceText string) map[string]any {
 	when = when.In(time.Local)
 	dateStr := when.Format("2006-01-02")
 	weekday := chineseWeekdays[int(when.Weekday())]
@@ -1620,6 +1672,9 @@ func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName
 				fmt.Fprintf(&b, "- 本月加班时长：%s\n", humanDuration(monthOT))
 			}
 		}
+		if sourceText != "" {
+			fmt.Fprintf(&b, "- 触发原因：%s\n", sourceText)
+		}
 		fmt.Fprintf(&b, "- 消息时间：%s", clockMs)
 	} else {
 		if e.Kind == argus.EventOnline {
@@ -1638,6 +1693,9 @@ func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName
 		fmt.Fprintf(&b, "- 类别：%s\n", e.Device.Type)
 		fmt.Fprintf(&b, "- IP地址：%s\n", ip)
 		fmt.Fprintf(&b, "- Mac地址：%s\n", strings.ToLower(mac))
+		if sourceText != "" {
+			fmt.Fprintf(&b, "- 触发原因：%s\n", sourceText)
+		}
 		fmt.Fprintf(&b, "- 消息时间：%s", clockMs)
 	}
 	payload := map[string]any{}
