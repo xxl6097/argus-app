@@ -162,7 +162,7 @@ func main() {
 		}
 		if *historyDir != "" {
 			opts = append(opts, web.WithHistory(web.NewHistoryStore(*historyDir)))
-			log.Printf("设备上下线历史已启用 (dir=%s, retention=7d)", *historyDir)
+			log.Printf("设备上下线历史已启用 (dir=%s, retention=30d)", *historyDir)
 		}
 		// Auto-detect OpenWrt uci; enable /api/dhcp + dashboard static-IP
 		// button when available, silently skip otherwise (dev laptops).

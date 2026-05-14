@@ -300,7 +300,7 @@ argus-app/
 
 ### 4. 上下线历史 (`history/<mac>.jsonl`)
 每个 MAC 一份 JSONL 追加日志，记录 ONLINE / OFFLINE 事件。
-- **保留 7 天**，超出阈值自动压缩
+- **保留 30 天**，超出阈值自动压缩
 - 启动时把当前在线设备播种为 ONLINE，避免长期无事件丢上线时点
 
 ### 5. 工时统计核心（`history.go`）
@@ -391,7 +391,7 @@ argus-app/
 - 点击任意月份 → 自动跳到「工作时长」tab 并加载该月
 
 #### 📜 上下线记录
-- 最近 7 天的上线 / 离线时间线，按日分组、最新在前
+- 保留 30 天的上线 / 离线时间线，**单日视图** + 左右键 / ◀ ▶ 按钮翻页
 - 显示 IP、主机名等附加字段
 
 #### ⚙ 信息设置
@@ -474,7 +474,7 @@ GO_BIN=/usr/local/go/bin/go \
 | `/api/events` | GET (SSE) | 上下线 / Change 事件流 |
 | `/api/aliases` | GET / POST / DELETE | MAC 别名增删改查 |
 | `/api/dhcp` | GET / POST / DELETE | 静态 IP 租约 |
-| `/api/history` | GET | 某 MAC 上下线记录（最多 7 天） |
+| `/api/history` | GET | 某 MAC 上下线记录（最多 30 天，可加 `from=YYYY-MM-DD&to=YYYY-MM-DD` 取单日） |
 | `/api/worktime` | GET | 单日工时报告 |
 | `/api/worktime/month` | GET | 月度工时报告 |
 | `/api/worktime/override` | GET / POST / DELETE | 手动覆写 |

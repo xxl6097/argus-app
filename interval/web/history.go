@@ -17,7 +17,7 @@ import (
 // HistoryRetention is how long per-MAC online/offline records are kept
 // on disk and returned by /api/history. Records older than this are
 // dropped on the next compaction pass (append-time, cheap).
-const HistoryRetention = 7 * 24 * time.Hour
+const HistoryRetention = 30 * 24 * time.Hour
 
 // historyCompactEvery triggers an in-place rewrite of a MAC's jsonl
 // file once it grows past this many lines, to bound disk usage even

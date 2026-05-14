@@ -791,45 +791,113 @@
     activateTab(hasWorktime ? "worktime" : "history");
   }
 
+  // formatLocalDate returns YYYY-MM-DD in the user's locale (not UTC),
+  // since toISOString() would shift early-morning times to the previous day.
+  function formatLocalDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + dd;
+  }
+
+  // shiftDate(YYYY-MM-DD, n) → YYYY-MM-DD shifted by n days.
+  function shiftDate(s, n) {
+    const [y, m, d] = s.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + n);
+    return formatLocalDate(dt);
+  }
+
+  // Per-day history pane:
+  //   ◀ [date] ▶ 今天   ← 左右键 / 点按钮切换日期
+  // 服务端保留 30 天,可任意翻看。
   async function renderHistoryPane(body, mac) {
-    body.innerHTML = '<div class="hist-empty">加载中…</div>';
-    try {
-      const r = await fetch("/api/history?mac=" + encodeURIComponent(mac), { cache: "no-store" });
-      if (!r.ok) {
-        const b = await r.json().catch(() => ({}));
-        body.innerHTML = '<div class="hist-empty">加载失败: ' + esc(b.error || r.status) + '</div>';
-        return;
-      }
-      const data = await r.json();
-      const entries = (data.entries || []).slice().reverse(); // newest first
-      if (entries.length === 0) {
-        body.innerHTML = '<div class="hist-empty">7 天内无上下线记录(此设备可能一直在线,或启用历史后未发生变化)</div>';
-        return;
-      }
-      let html = '<ul class="hist-list">';
-      let lastDay = "";
-      for (const e of entries) {
-        const d = new Date(e.t);
-        const day = d.toLocaleDateString();
-        if (day !== lastDay) {
-          html += '<li class="hist-day" style="grid-template-columns:1fr">' + esc(day) + '</li>';
-          lastDay = day;
+    const today = formatLocalDate(new Date());
+    body.innerHTML =
+      '<div class="wt-controls">' +
+      '<label>日期 ' +
+      '<button class="hdr-btn h-day-prev" title="上一天 (←)">◀</button>' +
+      '<input type="date" class="h-day-in" value="' + esc(today) + '" max="' + esc(today) + '">' +
+      '<button class="hdr-btn h-day-next" title="下一天 (→)">▶</button>' +
+      '<button class="hdr-btn h-day-today" title="今天">今天</button>' +
+      '</label>' +
+      '<span class="wt-note">使用键盘 ← / → 快速翻页,服务端保留 30 天</span>' +
+      '</div>' +
+      '<div class="h-list-wrap"><div class="hist-empty">加载中…</div></div>';
+
+    const dayIn = body.querySelector(".h-day-in");
+    const listWrap = body.querySelector(".h-list-wrap");
+
+    async function load(day) {
+      dayIn.value = day;
+      listWrap.innerHTML = '<div class="hist-empty">加载中…</div>';
+      try {
+        const url = "/api/history?mac=" + encodeURIComponent(mac) +
+                    "&from=" + day + "&to=" + day;
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          listWrap.innerHTML = '<div class="hist-empty">加载失败: ' + esc(b.error || r.status) + '</div>';
+          return;
         }
-        const time = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false});
-        const kindClass = e.k === "ONLINE" ? "online" : "offline";
-        const kindLabel = e.k === "ONLINE" ? "上线" : "离线";
-        const extra = [e.ip, e.host].filter(Boolean).join(" · ");
-        html += '<li>' +
-          '<span class="h-ts">' + esc(time) + '</span>' +
-          '<span class="h-kind ' + kindClass + '">' + kindLabel + '</span>' +
-          '<span class="h-extra" title="' + esc(extra) + '">' + esc(extra) + '</span>' +
-          '</li>';
+        const data = await r.json();
+        const entries = (data.entries || []).slice().reverse(); // newest first
+        if (entries.length === 0) {
+          listWrap.innerHTML = '<div class="hist-empty">' + esc(day) + ' 无上下线记录</div>';
+          return;
+        }
+        let html = '<ul class="hist-list">';
+        for (const e of entries) {
+          const d = new Date(e.t);
+          const time = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false});
+          const kindClass = e.k === "ONLINE" ? "online" : "offline";
+          const kindLabel = e.k === "ONLINE" ? "上线" : "离线";
+          const extra = [e.ip, e.host].filter(Boolean).join(" · ");
+          html += '<li>' +
+            '<span class="h-ts">' + esc(time) + '</span>' +
+            '<span class="h-kind ' + kindClass + '">' + kindLabel + '</span>' +
+            '<span class="h-extra" title="' + esc(extra) + '">' + esc(extra) + '</span>' +
+            '</li>';
+        }
+        html += '</ul><div class="hist-empty" style="font-style:normal">' +
+                esc(day) + ' · 共 ' + entries.length + ' 条</div>';
+        listWrap.innerHTML = html;
+      } catch (e) {
+        listWrap.innerHTML = '<div class="hist-empty">网络错误: ' + esc(e.message) + '</div>';
       }
-      html += '</ul><div class="hist-empty" style="font-style:normal">共 ' + entries.length + ' 条,最近 7 天</div>';
-      body.innerHTML = html;
-    } catch (e) {
-      body.innerHTML = '<div class="hist-empty">网络错误: ' + esc(e.message) + '</div>';
     }
+
+    function shift(n) {
+      const next = shiftDate(dayIn.value || today, n);
+      // Don't navigate past today (history can't be in the future).
+      if (n > 0 && next > today) return;
+      load(next);
+    }
+
+    body.querySelector(".h-day-prev").addEventListener("click", () => shift(-1));
+    body.querySelector(".h-day-next").addEventListener("click", () => shift(1));
+    body.querySelector(".h-day-today").addEventListener("click", () => load(today));
+    dayIn.addEventListener("change", () => {
+      if (dayIn.value) load(dayIn.value);
+    });
+
+    // Keyboard ← / → shortcuts. Scoped: only when no input/textarea has
+    // focus (we don't want to hijack the date picker), and only while
+    // this pane is still in the DOM (the listener self-removes when the
+    // user switches tabs / collapses the row).
+    const onKey = (ev) => {
+      if (!body.isConnected) {
+        document.removeEventListener("keydown", onKey);
+        return;
+      }
+      const tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (ev.key === "ArrowLeft")  { ev.preventDefault(); shift(-1); }
+      if (ev.key === "ArrowRight") { ev.preventDefault(); shift(1); }
+    };
+    document.addEventListener("keydown", onKey);
+
+    load(today);
   }
 
   async function renderWorktimePane(body, mac, initialMonth) {
