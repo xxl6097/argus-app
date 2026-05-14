@@ -55,6 +55,7 @@ func main() {
 	settingsPath := flag.String("settings", "/etc/argusd/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
 	overridesPath := flag.String("overrides", "/etc/argusd/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
 	notifyPath := flag.String("notifications", "/etc/argusd/notifications.json", "path to per-device webhook/ntfy configs; empty disables notifications tab")
+	credentialsPath := flag.String("credentials", "/etc/argusd/credentials.json", "path to web UI admin credentials (bcrypt); empty disables the login gate (dev only)")
 	holidaysPath := flag.String("holidays", "/etc/argusd/holidays.json", "path to manual legal holiday / 调休 workday calendar; empty disables manual entries")
 	holidaysSystemPath := flag.String("holidays-system", "/etc/argusd/holidays_system.json", "path to auto-fetched (timor.tech) holiday cache; empty disables auto-refresh")
 	holidaysYearsAhead := flag.Int("holidays-years", 10, "how many years ahead to fetch on each refresh (current year + N-1 future). The State Council typically publishes only the current year, so unpublished years silently no-op.")
@@ -171,6 +172,17 @@ func main() {
 			log.Println("DHCP 静态租约管理已启用 (uci)")
 		} else {
 			log.Printf("DHCP 静态租约管理未启用: %v", err)
+		}
+		if *credentialsPath != "" {
+			creds := web.NewCredentialsStore(*credentialsPath)
+			opts = append(opts, web.WithCredentials(creds))
+			if creds.MustChange() {
+				log.Printf("Web UI 登录已启用 (file=%s) — 首次启动: 用户 %q 密码 admin/admin, 登录后会强制修改", *credentialsPath, creds.Username())
+			} else {
+				log.Printf("Web UI 登录已启用 (file=%s, user=%s)", *credentialsPath, creds.Username())
+			}
+		} else {
+			log.Println("Web UI 登录已禁用 (-credentials=\"\") — 任何 LAN 用户都能访问仪表板")
 		}
 		webServer = web.NewServer(w, opts...)
 		httpSrv = &http.Server{

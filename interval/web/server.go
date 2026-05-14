@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -50,6 +51,9 @@ var dashboardHTML []byte
 
 //go:embed assets/favicon.ico
 var faviconICO []byte
+
+//go:embed assets/login.html
+var loginHTML []byte
 
 // Defaults for the offline device cache. Override via Option at
 // construction time (see NewServer).
@@ -146,6 +150,20 @@ func WithHolidays(h *HolidayStore) Option {
 }
 
 // WithNotifications attaches a per-device notification store. When
+// WithCredentials enables Web UI login. When set, every route except
+// the login page itself + favicon requires a valid session cookie;
+// requests without one are redirected to /login (HTML clients) or
+// returned 401 (JSON / SSE clients). Pass nil to disable the login
+// gate entirely (default).
+func WithCredentials(store *CredentialsStore) Option {
+	return func(s *Server) {
+		s.creds = store
+		if store != nil && s.sessions == nil {
+			s.sessions = NewSessionStore()
+		}
+	}
+}
+
 // set, OnEvent fires webhooks and ntfy publishes, and /api/notifications
 // / /api/notifications/messages endpoints are served.
 func WithNotifications(store *NotifyStore, notifier *Notifier) Option {
@@ -216,6 +234,14 @@ type Server struct {
 	// means the default LAN policy (loopback + RFC1918).
 	writeAuth AuthCheck
 
+	// creds + sessions implement the Web UI login gate. When creds is
+	// nil, requireAuth() short-circuits to "always allowed" — that's
+	// the legacy / dev path where the dashboard is exposed unauthenticated.
+	// When creds is non-nil, every route except /login + /api/login +
+	// /favicon.ico requires a valid session cookie.
+	creds    *CredentialsStore
+	sessions *SessionStore
+
 	// recentSyslog is a per-MAC short-lived cache of the most recent
 	// syslog event seen for each direction (connect / disconnect).
 	// OnEvent consults this within syslogHintTTL to attribute the
@@ -280,23 +306,36 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	if s.writeAuth == nil {
 		s.writeAuth = defaultLANAuth
 	}
-	s.mux.HandleFunc("/", s.handleIndex)
+	// Login flow routes — bypass requireAuth so unauthenticated users
+	// can actually reach the login form.
+	s.mux.HandleFunc("/login", s.handleLogin)
+	s.mux.HandleFunc("/api/login", s.handleAPILogin)
+	s.mux.HandleFunc("/api/logout", s.handleAPILogout)
+	// Favicon stays public — it's pulled by the browser before any
+	// auth happens, and serving it 401 just produces console noise.
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
-	s.mux.HandleFunc("/api/devices", s.handleDevices)
-	s.mux.HandleFunc("/api/events", s.handleEvents)
-	s.mux.HandleFunc("/api/aliases", s.handleAliases)
-	s.mux.HandleFunc("/api/dhcp", s.handleDHCP)
-	s.mux.HandleFunc("/api/system/reboot", s.handleReboot)
-	s.mux.HandleFunc("/api/system/restart-network", s.handleRestartNetwork)
-	s.mux.HandleFunc("/api/history", s.handleHistory)
-	s.mux.HandleFunc("/api/worktime", s.handleWorktime)
-	s.mux.HandleFunc("/api/worktime/month", s.handleWorktimeMonth)
-	s.mux.HandleFunc("/api/worktime/override", s.handleWorktimeOverride)
-	s.mux.HandleFunc("/api/settings", s.handleSettings)
-	s.mux.HandleFunc("/api/holidays", s.handleHolidays)
-	s.mux.HandleFunc("/api/notifications", s.handleNotifications)
-	s.mux.HandleFunc("/api/notifications/messages", s.handleNotificationMessages)
-	s.mux.HandleFunc("/api/notifications/test", s.handleNotificationTest)
+
+	// Everything else goes through requireAuth. When creds == nil
+	// requireAuth is a pass-through, so the legacy "no login gate"
+	// behaviour is preserved.
+	gate := s.requireAuth
+	s.mux.HandleFunc("/", gate(s.handleIndex))
+	s.mux.HandleFunc("/api/devices", gate(s.handleDevices))
+	s.mux.HandleFunc("/api/events", gate(s.handleEvents))
+	s.mux.HandleFunc("/api/aliases", gate(s.handleAliases))
+	s.mux.HandleFunc("/api/dhcp", gate(s.handleDHCP))
+	s.mux.HandleFunc("/api/system/reboot", gate(s.handleReboot))
+	s.mux.HandleFunc("/api/system/restart-network", gate(s.handleRestartNetwork))
+	s.mux.HandleFunc("/api/history", gate(s.handleHistory))
+	s.mux.HandleFunc("/api/worktime", gate(s.handleWorktime))
+	s.mux.HandleFunc("/api/worktime/month", gate(s.handleWorktimeMonth))
+	s.mux.HandleFunc("/api/worktime/override", gate(s.handleWorktimeOverride))
+	s.mux.HandleFunc("/api/settings", gate(s.handleSettings))
+	s.mux.HandleFunc("/api/holidays", gate(s.handleHolidays))
+	s.mux.HandleFunc("/api/notifications", gate(s.handleNotifications))
+	s.mux.HandleFunc("/api/notifications/messages", gate(s.handleNotificationMessages))
+	s.mux.HandleFunc("/api/notifications/test", gate(s.handleNotificationTest))
+	s.mux.HandleFunc("/api/password", gate(s.handleAPIPassword))
 	return s
 }
 
@@ -831,6 +870,236 @@ func isRFC1918(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// -------- Web UI auth gate (cookie-based login) --------
+
+// requireAuth wraps an http.HandlerFunc so it only runs after the
+// caller presents a valid session cookie. When s.creds is nil the
+// gate is disabled and requests pass through unchanged — that's the
+// legacy "no login" mode preserved by `-credentials=""`.
+//
+// Failure modes:
+//   - HTML clients (Accept includes text/html) → 302 to /login?next=<path>
+//   - JSON / SSE / curl / fetch → 401 with a JSON body
+//
+// The HTML-vs-API split lets the dashboard's running fetch() calls
+// surface a clean 401 (so the SSE client can reconnect after login)
+// while making the address-bar experience obvious for humans.
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.creds == nil {
+			next(w, r)
+			return
+		}
+		c, err := r.Cookie(cookieName)
+		if err == nil {
+			if user, ok := s.sessions.Validate(c.Value); ok {
+				// Stash username for downstream handlers that care
+				// (currently only /api/password).
+				ctx := contextWithUser(r.Context(), user)
+				next(w, r.WithContext(ctx))
+				return
+			}
+		}
+		// Unauthenticated. HTML browsers get redirected; everything
+		// else gets a 401 JSON.
+		if wantsHTML(r) {
+			next := url.QueryEscape(r.URL.RequestURI())
+			http.Redirect(w, r, "/login?next="+next, http.StatusFound)
+			return
+		}
+		writeJSONErr(w, http.StatusUnauthorized, "unauthenticated")
+	}
+}
+
+// wantsHTML returns true when the client appears to be a browser
+// asking for a page (vs an XHR / fetch / curl / SSE consumer).
+// Heuristic: Accept header contains text/html and is NOT an SSE
+// stream (Accept: text/event-stream or X-Requested-With: fetch).
+func wantsHTML(r *http.Request) bool {
+	if r.Header.Get("X-Requested-With") != "" {
+		return false
+	}
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "text/event-stream") {
+		return false
+	}
+	return strings.Contains(accept, "text/html")
+}
+
+// userCtxKey is the unexported context key used to stash the
+// authenticated username on the request context.
+type userCtxKey struct{}
+
+func contextWithUser(ctx context.Context, user string) context.Context {
+	return context.WithValue(ctx, userCtxKey{}, user)
+}
+
+func userFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(userCtxKey{}).(string)
+	return v
+}
+
+// handleLogin serves the login page (GET) — a single embedded HTML
+// document that posts to /api/login. Public route.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// If creds is disabled, /login is meaningless — bounce back to /.
+	if s.creds == nil {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	// Already logged in? Bounce to dashboard so users don't get stuck
+	// staring at the login page after refreshing.
+	if c, err := r.Cookie(cookieName); err == nil {
+		if _, ok := s.sessions.Validate(c.Value); ok {
+			http.Redirect(w, r, nextOrRoot(r), http.StatusFound)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(loginHTML)
+}
+
+// nextOrRoot extracts ?next=URL from the query string, sanity-checks
+// it, and falls back to "/". Prevents open-redirect: the URL must
+// start with a single slash and not be //... (which would resolve
+// to a different host).
+func nextOrRoot(r *http.Request) string {
+	n := r.URL.Query().Get("next")
+	if n == "" || !strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") {
+		return "/"
+	}
+	return n
+}
+
+// handleAPILogin processes a username/password POST. On success it
+// writes the session cookie and returns JSON describing where to go
+// next ("/" or "/login?must_change=1" depending on the seeded-default
+// flag). On failure: 401.
+func (s *Server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
+	if s.creds == nil {
+		writeJSONErr(w, http.StatusServiceUnavailable, "credentials not enabled")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if !s.creds.Verify(in.Username, in.Password) {
+		// Constant-ish response time — bcrypt already runs ~100ms
+		// on success and failure, so we don't need an explicit sleep.
+		writeJSONErr(w, http.StatusUnauthorized, "用户名或密码错误")
+		return
+	}
+	tok, err := s.sessions.Issue(s.creds.Username())
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "issue session: "+err.Error())
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		// No MaxAge → session cookie. The server-side TTL still bounds
+		// validity to sessionTTL; this just avoids persisting the
+		// cookie across browser restarts. Add MaxAge if you want
+		// "remember me" behaviour.
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          true,
+		"must_change": s.creds.MustChange(),
+	})
+}
+
+// handleAPILogout drops the current session. Idempotent; always 200.
+func (s *Server) handleAPILogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if c, err := r.Cookie(cookieName); err == nil && s.sessions != nil {
+		s.sessions.Revoke(c.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// handleAPIPassword changes the admin password. Requires an active
+// session AND the caller to demonstrate knowledge of the current
+// password. After a successful change all OTHER sessions are
+// revoked so a forgotten browser can't continue with the old
+// credentials.
+func (s *Server) handleAPIPassword(w http.ResponseWriter, r *http.Request) {
+	if s.creds == nil {
+		writeJSONErr(w, http.StatusServiceUnavailable, "credentials not enabled")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !s.writeAuth(r) {
+		writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
+		return
+	}
+	var in struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&in); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := s.creds.ChangePassword(in.OldPassword, in.NewPassword); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Drop every existing session and issue a fresh one for the
+	// caller, so other browsers (and any leaked cookie) get logged out.
+	s.sessions.RevokeAll()
+	tok, err := s.sessions.Issue(s.creds.Username())
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "issue session: "+err.Error())
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    tok,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // handleHistory serves GET /api/history?mac=XX&from=YYYY-MM-DD&to=YYYY-MM-DD

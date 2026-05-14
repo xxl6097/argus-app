@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1014">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title>登录 · WiFi 考勤</title>
+<style>
+  :root {
+    --bg: #0e1014; --fg: #e6e6e6; --muted: #8a8f98; --line: #1e2128;
+    --card: #14171d; --accent: #4ec9b0; --offline: #f07178; --change: #e5c07b;
+  }
+  * { box-sizing: border-box; }
+  html, body { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    width: 100%; max-width: 360px; margin: 16px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 24px;
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; font-weight: 500; color: var(--accent); }
+  .sub { margin: 0 0 18px; color: var(--muted); font-size: 12px; }
+  label { display: block; font-size: 11px; color: var(--muted); margin: 12px 0 4px; }
+  input[type=text], input[type=password] {
+    width: 100%; background: #0e1014; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 8px 10px; font: inherit;
+  }
+  input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 18px;
+    background: var(--accent); border: none; color: #0e1014;
+    padding: 10px; font: inherit; font-weight: 500;
+    border-radius: 4px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .err {
+    color: var(--offline); font-size: 12px; margin-top: 12px;
+    min-height: 18px;
+  }
+  .notice {
+    color: var(--change); font-size: 12px; margin: 12px 0 0;
+    padding: 8px 10px; border: 1px solid rgba(229,192,123,0.35);
+    background: rgba(229,192,123,0.08); border-radius: 4px;
+    display: none;
+  }
+  .notice.show { display: block; }
+  .hint {
+    color: var(--muted); font-size: 11px; text-align: center;
+    margin-top: 14px;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>WiFi 考勤 · 工时统计</h1>
+    <p class="sub">请登录</p>
+
+    <form id="login-form">
+      <label>用户名</label>
+      <input type="text" id="username" autocomplete="username" autocapitalize="none" autocorrect="off" required>
+      <label>密码</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+      <button type="submit" id="login-btn">登录</button>
+    </form>
+
+    <form id="change-form" style="display:none">
+      <p class="notice show">默认密码 admin/admin 仅用于首次登录，请立即修改。</p>
+      <label>当前密码</label>
+      <input type="password" id="old-password" autocomplete="current-password" required>
+      <label>新密码（至少 6 位）</label>
+      <input type="password" id="new-password" autocomplete="new-password" minlength="6" required>
+      <label>再次输入新密码</label>
+      <input type="password" id="new-password2" autocomplete="new-password" minlength="6" required>
+      <button type="submit" id="change-btn">修改并登录</button>
+    </form>
+
+    <div class="err" id="err"></div>
+    <p class="hint">登录信息存在 cookie，24 小时内免再输</p>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const errEl = $("err");
+  let cachedOldPass = "";  // 改密时复用首次输入
+
+  function showErr(msg) { errEl.textContent = msg || ""; }
+
+  $("login-form").addEventListener("submit", async ev => {
+    ev.preventDefault();
+    showErr("");
+    $("login-btn").disabled = true;
+    try {
+      const username = $("username").value.trim();
+      const password = $("password").value;
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+        body: JSON.stringify({ username, password }),
+        credentials: "same-origin",
+      });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        showErr(b.error || ("登录失败 (" + r.status + ")"));
+        return;
+      }
+      const data = await r.json();
+      if (data.must_change) {
+        cachedOldPass = password;
+        $("old-password").value = password;
+        $("login-form").style.display = "none";
+        $("change-form").style.display = "block";
+        $("new-password").focus();
+        return;
+      }
+      const next = new URLSearchParams(location.search).get("next") || "/";
+      // 防开重定向: 只允许同源相对路径
+      location.href = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    } catch (e) {
+      showErr("网络错误: " + e.message);
+    } finally {
+      $("login-btn").disabled = false;
+    }
+  });
+
+  $("change-form").addEventListener("submit", async ev => {
+    ev.preventDefault();
+    showErr("");
+    const oldPass = $("old-password").value || cachedOldPass;
+    const newPass = $("new-password").value;
+    const newPass2 = $("new-password2").value;
+    if (newPass !== newPass2) { showErr("两次输入的新密码不一致"); return; }
+    if (newPass.length < 6)   { showErr("新密码至少 6 位");        return; }
+    if (newPass === oldPass)  { showErr("新密码不能与当前密码相同"); return; }
+    $("change-btn").disabled = true;
+    try {
+      const r = await fetch("/api/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "fetch" },
+        body: JSON.stringify({ old_password: oldPass, new_password: newPass }),
+        credentials: "same-origin",
+      });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        showErr(b.error || ("修改失败 (" + r.status + ")"));
+        return;
+      }
+      location.href = "/";
+    } catch (e) {
+      showErr("网络错误: " + e.message);
+    } finally {
+      $("change-btn").disabled = false;
+    }
+  });
+
+  // 进入页面时聚焦用户名
+  $("username").focus();
+</script>
+</body>
+</html>

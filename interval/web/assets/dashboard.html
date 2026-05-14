@@ -431,6 +431,8 @@
     <span class="pill offline" id="count-offline" title="离线设备数">离线 0</span>
     <button id="btn-restart-net" class="hdr-btn" title="重启网络服务 (约 5-15 秒瞬断,保留配置)">重启网络</button>
     <button id="btn-reboot" class="hdr-btn hdr-danger" title="重启路由器 (将断网 30-60 秒)">重启路由器</button>
+    <button id="btn-passwd" class="hdr-btn" title="修改登录密码" style="display:none">🔑 改密</button>
+    <button id="btn-logout" class="hdr-btn" title="退出登录" style="display:none">⏻ 退出</button>
   </span>
 </header>
 <main>
@@ -2068,7 +2070,7 @@
   }
 
   function connectSSE() {
-    const es = new EventSource("/api/events");
+    const es = new EventSource("/api/events", { withCredentials: true });
     es.addEventListener("hello", () => {
       elConn.textContent = "已连接";
       elConn.style.background = "rgba(78,201,176,0.15)";
@@ -2172,6 +2174,67 @@
       }
     });
   }
+
+  // ---- 登录态管理: 仅在服务端启用了 -credentials 时才暴露登出/改密按钮 ----
+  // 服务端没有专门的 /api/whoami; 这里做最经济的探测: 第一次拉
+  // /api/devices 时带 X-Requested-With, 401 → 跳登录页, 200 →
+  // 顺势把按钮显出来(说明 cookie 有效, 也意味着登录确实开着)。
+  // 因为整个 UI 的所有 fetch 都需要鉴权, 这里再装一层全局 401 拦截:
+  // 任何接口返回 401 都把人踢回 /login。
+  (function installAuthHooks() {
+    const origFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init) {
+      init = init || {};
+      // 默认带 cookie (虽然同源 fetch 也带, 但显式更稳)
+      if (!init.credentials) init.credentials = "same-origin";
+      const headers = new Headers(init.headers || {});
+      if (!headers.has("X-Requested-With")) headers.set("X-Requested-With", "fetch");
+      init.headers = headers;
+      const r = await origFetch(input, init);
+      if (r.status === 401) {
+        // 异步: 让当前 await r.json() 之类的调用先看到 401
+        setTimeout(() => {
+          const next = encodeURIComponent(location.pathname + location.search);
+          location.href = "/login?next=" + next;
+        }, 0);
+      }
+      return r;
+    };
+
+    // 探测一次 /api/devices, 200 才显示登出按钮
+    fetch("/api/devices").then(r => {
+      if (r.ok) {
+        document.getElementById("btn-logout").style.display = "";
+        document.getElementById("btn-passwd").style.display = "";
+      }
+    }).catch(() => {});
+
+    document.getElementById("btn-logout").addEventListener("click", async () => {
+      try { await fetch("/api/logout", { method: "POST" }); } catch (_) {}
+      location.href = "/login";
+    });
+
+    document.getElementById("btn-passwd").addEventListener("click", () => {
+      const oldP = prompt("请输入当前密码"); if (oldP === null) return;
+      const newP = prompt("请输入新密码 (至少 6 位)"); if (newP === null) return;
+      const newP2 = prompt("再次输入新密码"); if (newP2 === null) return;
+      if (newP !== newP2)   { alert("两次输入的新密码不一致"); return; }
+      if (newP.length < 6)  { alert("新密码至少 6 位");        return; }
+      if (newP === oldP)    { alert("新密码不能与当前密码相同"); return; }
+      fetch("/api/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_password: oldP, new_password: newP }),
+      }).then(async r => {
+        if (r.ok) {
+          alert("密码已修改, 其他会话已被踢出。");
+        } else {
+          const b = await r.json().catch(() => ({}));
+          alert("修改失败: " + (b.error || r.status));
+        }
+      });
+    });
+  })();
 })();
 </script>
 </body>

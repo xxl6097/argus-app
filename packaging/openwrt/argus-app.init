@@ -29,6 +29,7 @@ start_service() {
         -settings "$CONFIG_DIR/settings.json" \
         -overrides "$CONFIG_DIR/overrides.json" \
         -notifications "$CONFIG_DIR/notifications.json" \
+        -credentials "$CONFIG_DIR/credentials.json" \
         -holidays "$CONFIG_DIR/holidays.json" \
         -holidays-system "$CONFIG_DIR/holidays_system.json" \
         -history-dir "$CONFIG_DIR/history"
