@@ -104,44 +104,29 @@ fetch() {
 }
 
 # ---------- 3. 版本解析 ----------
+# 用 GitHub API 拿 latest release 的 tag_name。比 HTML / 重定向探测稳:
+# 响应几 KB JSON, 不依赖 busybox wget 的 redirect 行为。
+# 顺序: 直连 api.github.com → gh-proxy.com 代理 → 用户给的 PROXY 前缀。
 resolve_version() {
     if [ -n "${VERSION:-}" ]; then
-        echo "$VERSION"
+        RESOLVED_VERSION="$VERSION"
         return
     fi
-    # 拉一份 release 跳转链接来反解版本号。
-    # 不能用 latest/download/install.sh 因为 v0.1.0 等老 tag 上没有这个文件。
-    redirect_probe="$TMP_DIR/.redirect"
-    candidates="https://github.com/${REPO}/releases/latest"
-    # 先试直连
-    if [ "${PROXY:-}" = "" ] || [ "${PROXY:-}" = "none" ]; then
-        url=$(curl_redirect "$candidates" || echo "")
-    else
-        url=$(curl_redirect "${PROXY%/}/$candidates" || echo "")
-    fi
-    if [ -z "$url" ]; then
-        # 直连不行 → 走镜像
-        for m in $GH_MIRRORS; do
-            url=$(curl_redirect "${m%/}/$candidates" || echo "")
-            if [ -n "$url" ]; then
-                PROXY="$m"
-                break
-            fi
-        done
-    fi
-    tag=$(echo "$url" | sed -n 's@.*/tag/\(v[^/]*\).*@\1@p')
-    [ -n "$tag" ] || die "无法解析最新版本号，请用 VERSION=vX.Y.Z 指定"
-    echo "$tag"
-}
-
-curl_redirect() {
-    u="$1"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSLI --connect-timeout 5 --max-time 10 -o /dev/null -w '%{url_effective}' "$u" 2>/dev/null
-    else
-        wget --max-redirect=10 --spider -S -T 10 "$u" 2>&1 \
-            | awk '/Location:/{u=$2} END{print u}'
-    fi
+    json="$TMP_DIR/.latest.json"
+    api="https://api.github.com/repos/${REPO}/releases/latest"
+    candidates="$api"
+    case "${PROXY:-}" in
+        none|NONE|off|OFF) ;;
+        ?*)               candidates="${PROXY%/}/$api $candidates" ;;
+        *)                candidates="$candidates https://gh-proxy.com/$api" ;;
+    esac
+    for u in $candidates; do
+        if try_dl "$u" "$json" 15 && [ -s "$json" ]; then
+            RESOLVED_VERSION=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json" | head -n1)
+            [ -n "$RESOLVED_VERSION" ] && return
+        fi
+    done
+    die "无法解析最新版本号，请用 VERSION=vX.Y.Z 指定"
 }
 
 # ---------- 4. 主流程 ----------
@@ -153,7 +138,8 @@ main() {
     trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
     arch=$(detect_arch)
-    version=$(resolve_version)
+    resolve_version
+    version="$RESOLVED_VERSION"
     pkg="argus-app_${version}_${arch}.tar.gz"
     base_url="https://github.com/${REPO}/releases/download/${version}"
 
