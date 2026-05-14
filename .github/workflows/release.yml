@@ -90,10 +90,13 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: stage installer
+        run: cp install.sh dist/install.sh
+
       - name: checksums
         run: |
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz install.sh > SHA256SUMS
           cat SHA256SUMS
 
       - name: publish
@@ -101,6 +104,7 @@ jobs:
         with:
           files: |
             dist/*.tar.gz
+            dist/install.sh
             dist/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true

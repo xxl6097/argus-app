@@ -47,7 +47,37 @@
 
 ## 快速开始
 
-### 方式 A：下载预编译二进制（推荐）
+### 方式 0：一键脚本（最简）
+
+直接 SSH 到 OpenWrt 路由器执行：
+
+```sh
+wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+```
+
+或：
+
+```sh
+curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+```
+
+脚本会自动识别架构、下载对应包、校验 SHA256、安装 init 脚本、启用开机自启并启动服务。常用环境变量：
+
+```sh
+# 指定版本（默认拉 latest）
+VERSION=v0.1.0 sh install.sh
+
+# 改监听端口
+PORT=18099 sh install.sh
+
+# 国内网络慢可加代理前缀（gh 镜像）
+PROXY=https://ghproxy.com sh install.sh
+
+# 强制覆盖已有 init 脚本（默认升级时只换二进制）
+FORCE=1 sh install.sh
+```
+
+### 方式 A：下载预编译二进制（手动）
 
 到 [Releases](https://github.com/xxl6097/argus-app/releases) 下载对应架构的压缩包，
 里面包含 `argus-app` 可执行文件 + OpenWrt init 脚本 + 部署文档：
