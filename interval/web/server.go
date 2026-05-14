@@ -215,6 +215,27 @@ type Server struct {
 	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
 	// means the default LAN policy (loopback + RFC1918).
 	writeAuth AuthCheck
+
+	// recentSyslog is a per-MAC short-lived cache of the most recent
+	// syslog event seen for each direction (connect / disconnect).
+	// OnEvent consults this within syslogHintTTL to attribute the
+	// fetcher-detected ONLINE/OFFLINE to a specific syslog cause
+	// (WIFI_CONNECT, WPA_COMPLETE, DHCP_ACK, ...). When no recent
+	// hint matches the direction, the entry is recorded with the
+	// current FetcherKind (poll-based attribution) instead.
+	syslogMu    sync.Mutex
+	syslogHints map[string]syslogHint
+}
+
+// syslogHint is one direction-tagged syslog observation (connect side
+// vs disconnect side), stored per MAC. Only the most recent of each
+// direction is kept; older entries are overwritten because OnEvent
+// only looks back a few seconds anyway.
+type syslogHint struct {
+	connectKind    string // e.g. "WIFI_CONNECT", "WPA_COMPLETE", "DHCP_ACK"
+	connectAt      time.Time
+	disconnectKind string // e.g. "WIFI_DISCONNECT", "DEAUTH", "MACTABLE_DELETE"
+	disconnectAt   time.Time
 }
 
 // offlineEntry stores the last-known Device shape at the moment it went
@@ -245,12 +266,13 @@ type offlineEntry struct {
 //	}, nil)
 func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s := &Server{
-		watcher:    w,
-		mux:        http.NewServeMux(),
-		subs:       make(map[chan argus.Event]struct{}),
-		offline:    make(map[string]offlineEntry),
-		offlineTTL: defaultOfflineRetention,
-		offlineMax: defaultOfflineMax,
+		watcher:     w,
+		mux:         http.NewServeMux(),
+		subs:        make(map[chan argus.Event]struct{}),
+		offline:     make(map[string]offlineEntry),
+		offlineTTL:  defaultOfflineRetention,
+		offlineMax:  defaultOfflineMax,
+		syslogHints: make(map[string]syslogHint),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -319,7 +341,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) OnEvent(e argus.Event) {
 	s.updateOfflineCache(e)
 	if s.history != nil {
-		s.history.Record(e)
+		s.history.Record(e, s.sourceFor(e))
 	}
 	// Dispatch to webhook/ntfy with rich markdown context. We do this
 	// here (not inside Notifier) because the context — alias, punch
@@ -337,6 +359,69 @@ func (s *Server) OnEvent(e argus.Event) {
 			// them re-sync on (re)load.
 		}
 	}
+}
+
+// syslogHintTTL caps how stale a syslog hint can be before OnEvent
+// stops crediting it as the trigger of a fetcher-detected transition.
+// Real wifi flows fire connect-side syslog (WPA_COMPLETE / WIFI_CONNECT
+// / DHCP_ACK) within ~1s of the device showing up in poll results, so
+// 8s gives slack without smearing into the next session.
+const syslogHintTTL = 8 * time.Second
+
+// OnSyslog records a low-level syslog observation for a MAC, keyed by
+// direction (connect vs disconnect). The next ONLINE/OFFLINE that
+// matches that direction will be attributed to this syslog cause
+// instead of the generic poll fetcher. Safe to call from any goroutine.
+//
+// Wire it in at startup like this:
+//
+//	owrt.WatchSyslog(ctx, srv.OnSyslog, onError)
+func (s *Server) OnSyslog(e argus.SyslogEvent) {
+	mac := normalizeMAC(e.MAC)
+	if mac == "" {
+		return
+	}
+	s.syslogMu.Lock()
+	defer s.syslogMu.Unlock()
+	h := s.syslogHints[mac]
+	switch {
+	case e.Kind.IsConnect():
+		h.connectKind = e.Kind.String()
+		h.connectAt = nonZeroTime(e.Time)
+	case e.Kind.IsDisconnect():
+		h.disconnectKind = e.Kind.String()
+		h.disconnectAt = nonZeroTime(e.Time)
+	default:
+		return
+	}
+	s.syslogHints[mac] = h
+}
+
+// sourceFor returns the attribution string for a fetcher-emitted event.
+// Returns "syslog:<KIND>" when a fresh same-direction hint exists,
+// otherwise "fetcher:<kind>" using the watcher's selected fetcher.
+func (s *Server) sourceFor(e argus.Event) string {
+	mac := normalizeMAC(e.Device.MAC)
+	now := nonZeroTime(e.Time)
+	s.syslogMu.Lock()
+	h, ok := s.syslogHints[mac]
+	s.syslogMu.Unlock()
+	if ok {
+		switch e.Kind {
+		case argus.EventOnline:
+			if h.connectKind != "" && now.Sub(h.connectAt) <= syslogHintTTL && now.Sub(h.connectAt) >= -syslogHintTTL {
+				return "syslog:" + h.connectKind
+			}
+		case argus.EventOffline:
+			if h.disconnectKind != "" && now.Sub(h.disconnectAt) <= syslogHintTTL && now.Sub(h.disconnectAt) >= -syslogHintTTL {
+				return "syslog:" + h.disconnectKind
+			}
+		}
+	}
+	if k := s.watcher.FetcherKind(); k != "" {
+		return "fetcher:" + string(k)
+	}
+	return "fetcher"
 }
 
 func (s *Server) updateOfflineCache(e argus.Event) {

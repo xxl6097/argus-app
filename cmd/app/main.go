@@ -210,8 +210,17 @@ func main() {
 	}
 
 	// 启动外部系统日志监听用于展示 (库内部的 syslog 已自动纳入离线判断)
+	// 同时把每条系统日志事件喂给 web.Server 作为来源标注的 hint, 这样
+	// /api/history 落盘的每个 ONLINE/OFFLINE 都能携带 src 字段
+	// (syslog:WPA_COMPLETE / fetcher:ahsapd / ...)
 	go func() {
-		if err := owrt.WatchSyslog(exitCtx, onSyslog, onError); err != nil {
+		handler := func(e owrt.SyslogEvent) {
+			onSyslog(e)
+			if webServer != nil {
+				webServer.OnSyslog(e)
+			}
+		}
+		if err := owrt.WatchSyslog(exitCtx, handler, onError); err != nil {
 			log.Printf("系统日志监听异常退出: %v", err)
 		}
 	}()

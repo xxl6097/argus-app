@@ -35,6 +35,7 @@ type HistoryEntry struct {
 	Kind     string `json:"k"` // "ONLINE" | "OFFLINE"
 	IP       string `json:"ip,omitempty"`
 	Hostname string `json:"host,omitempty"`
+	Source   string `json:"src,omitempty"` // "fetcher:ahsapd" | "syslog:WPA_COMPLETE" | "seed"
 }
 
 // HistoryStore is an append-only per-MAC event log backed by JSONL
@@ -86,7 +87,12 @@ func (s *HistoryStore) macFile(mac string) string {
 
 // Record appends an Online/Offline transition for the given event.
 // Change events are ignored. No-op when the store is disk-less.
-func (s *HistoryStore) Record(e argus.Event) {
+//
+// source is a free-form attribution string surfaced on the timeline UI;
+// the typical values are "fetcher:<kind>" for poll-based detection,
+// "syslog:<kind>" for syslog-driven detection, "seed" for the startup
+// baseline and "" when the caller didn't bother to compute it.
+func (s *HistoryStore) Record(e argus.Event, source string) {
 	if s.dir == "" {
 		return
 	}
@@ -109,6 +115,7 @@ func (s *HistoryStore) Record(e argus.Event) {
 		Kind:     kind,
 		IP:       e.Device.IP,
 		Hostname: e.Device.Hostname,
+		Source:   source,
 	}
 
 	lk := s.macLock(mac)
@@ -184,6 +191,7 @@ func (s *HistoryStore) SeedBaseline(dev argus.Device, at time.Time) {
 		Kind:     "ONLINE",
 		IP:       dev.IP,
 		Hostname: dev.Hostname,
+		Source:   "seed",
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {

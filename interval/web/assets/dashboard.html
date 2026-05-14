@@ -273,9 +273,16 @@
   }
   .hist-list li {
     padding: 6px 10px; border-bottom: 1px solid var(--line);
-    display: grid; grid-template-columns: auto auto 1fr; gap: 10px;
+    display: grid; grid-template-columns: auto auto auto 1fr; gap: 10px;
     font-size: 12px; align-items: baseline;
   }
+  .hist-list .h-src {
+    font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    background: rgba(255,255,255,0.06); color: var(--muted);
+    border: 1px solid var(--line); white-space: nowrap;
+  }
+  .hist-list .h-src.s-syslog { color: var(--accent); border-color: rgba(78,201,176,0.35); background: rgba(78,201,176,0.08); }
+  .hist-list .h-src.s-seed   { color: var(--change); border-color: rgba(229,192,123,0.35); background: rgba(229,192,123,0.08); }
   .hist-list li:last-child { border-bottom: none; }
   .hist-list .h-ts { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
   .hist-list .h-kind.online  { color: var(--online); }
@@ -808,6 +815,40 @@
     return formatLocalDate(dt);
   }
 
+  // historySourceLabel maps a Server-emitted src tag to a 短中文文案 +
+  // a CSS suffix (s-syslog / s-fetcher / s-seed) for color coding.
+  // Examples:  "syslog:WPA_COMPLETE" → {label: "认证完成", group: "syslog"}
+  //            "fetcher:ahsapd"      → {label: "ahsapd 轮询", group: "fetcher"}
+  //            "seed"                → {label: "启动快照", group: "seed"}
+  // Unknown / empty src → null (UI hides the badge).
+  const HISTORY_SYSLOG_LABELS = {
+    "WIFI_CONNECT":    "无线接入",
+    "WPA_COMPLETE":    "认证完成",
+    "DHCP_ACK":        "DHCP 分配",
+    "MACTABLE_INSERT": "MAC 表新增",
+    "WIFI_DISCONNECT": "无线断开",
+    "DEAUTH":          "认证踢出",
+    "MACTABLE_DELETE": "MAC 表移除",
+  };
+  function historySourceLabel(src) {
+    if (!src) return null;
+    if (src === "seed") return { label: "启动快照", group: "seed" };
+    const i = src.indexOf(":");
+    if (i < 0) {
+      return { label: src, group: "fetcher" };
+    }
+    const head = src.slice(0, i);
+    const tail = src.slice(i + 1);
+    if (head === "syslog") {
+      return { label: HISTORY_SYSLOG_LABELS[tail] || tail, group: "syslog" };
+    }
+    if (head === "fetcher") {
+      // fetcher 名 (ahsapd / hostapd / ...) 直接显示, 不另外汉化。
+      return { label: tail + " 轮询", group: "fetcher" };
+    }
+    return { label: src, group: "fetcher" };
+  }
+
   // Per-day history pane:
   //   ◀ [date] ▶ 今天   ← 左右键 / 点按钮切换日期
   // 服务端保留 30 天,可任意翻看。
@@ -853,9 +894,14 @@
           const kindClass = e.k === "ONLINE" ? "online" : "offline";
           const kindLabel = e.k === "ONLINE" ? "上线" : "离线";
           const extra = [e.ip, e.host].filter(Boolean).join(" · ");
+          const src = historySourceLabel(e.src);
+          const srcCell = src
+            ? '<span class="h-src s-' + esc(src.group) + '" title="' + esc(e.src) + '">' + esc(src.label) + '</span>'
+            : '<span></span>';
           html += '<li>' +
             '<span class="h-ts">' + esc(time) + '</span>' +
             '<span class="h-kind ' + kindClass + '">' + kindLabel + '</span>' +
+            srcCell +
             '<span class="h-extra" title="' + esc(extra) + '">' + esc(extra) + '</span>' +
             '</li>';
         }
