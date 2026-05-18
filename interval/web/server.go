@@ -1617,9 +1617,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
-			"punch_macs": s.settings.PunchMACsUpper(),
-			"work_start": cfg.WorkStart,
-			"work_end":   cfg.WorkEnd,
+			"punch_macs":         s.settings.PunchMACsUpper(),
+			"work_start":         cfg.WorkStart,
+			"work_end":           cfg.WorkEnd,
+			"global_webhook_url": cfg.GlobalWebhookURL,
 		})
 	case http.MethodPost:
 		if !s.writeAuth(r) {
@@ -1627,10 +1628,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			PunchMAC  *string `json:"punch_mac,omitempty"`
-			Punch     *bool   `json:"punch,omitempty"`
-			WorkStart string  `json:"work_start,omitempty"`
-			WorkEnd   string  `json:"work_end,omitempty"`
+			PunchMAC         *string `json:"punch_mac,omitempty"`
+			Punch            *bool   `json:"punch,omitempty"`
+			WorkStart        string  `json:"work_start,omitempty"`
+			WorkEnd          string  `json:"work_end,omitempty"`
+			GlobalWebhookURL *string `json:"global_webhook_url,omitempty"`
 			// Legacy alias: older clients posted {"me_mac": "AA:.."} to
 			// set the single punch device. Treat it as add-only.
 			MeMAC string `json:"me_mac,omitempty"`
@@ -1645,6 +1647,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				WorkStart: in.WorkStart,
 				WorkEnd:   in.WorkEnd,
 			}); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		// Global webhook URL
+		if in.GlobalWebhookURL != nil {
+			if err := s.settings.SetGlobalWebhook(*in.GlobalWebhookURL); err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -1989,17 +1998,15 @@ func sourceLabel(src string) string {
 }
 
 // dispatchNotify formats a markdown payload and ships it to the
-// per-device webhook/ntfy destinations. No-op when the device has no
-// notify config or notifier isn't enabled.
+// global webhook (settings.GlobalWebhookURL) and the per-device
+// webhook/ntfy destinations. Either / both may be enabled; the
+// payload carries a `scope` field ("global" or "device") so the
+// receiver can tell them apart.
 func (s *Server) dispatchNotify(e argus.Event) {
-	if s.notifier == nil || s.notifyStore == nil {
+	if s.notifier == nil {
 		return
 	}
 	if e.Kind != argus.EventOnline && e.Kind != argus.EventOffline {
-		return
-	}
-	cfg, ok := s.notifyStore.Lookup(e.Device.MAC)
-	if !ok {
 		return
 	}
 	mac := normalizeMAC(e.Device.MAC)
@@ -2027,16 +2034,42 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	source := s.sourceFor(e)
 	sourceText := sourceLabel(source)
 
-	payload := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch, sourceText)
-	// Surface the raw + label as top-level fields too, so generic JSON
-	// webhooks (no markdown rendering) can still see what triggered it.
+	base := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch, sourceText)
 	if source != "" {
-		payload["source"] = source
+		base["source"] = source
 	}
 	if sourceText != "" {
-		payload["source_label"] = sourceText
+		base["source_label"] = sourceText
 	}
-	s.notifier.Dispatch(mac, cfg, payload, e.Kind.String())
+
+	// 1) Global webhook (settings-level): fires for ANY device. Optional;
+	//    skipped when not configured.
+	if s.settings != nil {
+		if gURL := s.settings.Get().GlobalWebhookURL; gURL != "" {
+			gp := clonePayload(base)
+			gp["scope"] = "global"
+			s.notifier.Dispatch(mac, NotifyConfig{WebhookURL: gURL}, gp, e.Kind.String())
+		}
+	}
+
+	// 2) Per-device webhook + ntfy: only when an entry exists for this MAC.
+	if s.notifyStore != nil {
+		if cfg, ok := s.notifyStore.Lookup(e.Device.MAC); ok {
+			dp := clonePayload(base)
+			dp["scope"] = "device"
+			s.notifier.Dispatch(mac, cfg, dp, e.Kind.String())
+		}
+	}
+}
+
+// clonePayload makes a shallow copy of the notification payload so each
+// dispatch can stamp its own `scope` without racing the other goroutine.
+func clonePayload(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // formatNotifyMarkdown renders the per-device markdown body. Punch

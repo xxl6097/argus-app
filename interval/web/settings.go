@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,10 +23,11 @@ import (
 //     PunchMACs is empty but MeMAC is set, we fold MeMAC into the list
 //     and drop the legacy field on next persist.
 type Settings struct {
-	PunchMACs []string `json:"punch_macs,omitempty"`
-	MeMAC     string   `json:"me_mac,omitempty"` // legacy; superseded by PunchMACs
-	WorkStart string   `json:"work_start,omitempty"`
-	WorkEnd   string   `json:"work_end,omitempty"`
+	PunchMACs        []string `json:"punch_macs,omitempty"`
+	MeMAC            string   `json:"me_mac,omitempty"` // legacy; superseded by PunchMACs
+	WorkStart        string   `json:"work_start,omitempty"`
+	WorkEnd          string   `json:"work_end,omitempty"`
+	GlobalWebhookURL string   `json:"global_webhook_url,omitempty"`
 }
 
 // SettingsStore is a tiny JSON-file-backed settings store, mirroring
@@ -225,6 +227,20 @@ func (s *SettingsStore) persistLocked() error {
 		return err
 	}
 	return os.Rename(tmp, s.path)
+}
+
+// SetGlobalWebhook sets or clears the global webhook URL. An empty string
+// clears it. Non-empty values must pass url.ParseRequestURI.
+func (s *SettingsStore) SetGlobalWebhook(raw string) error {
+	if raw != "" {
+		if _, err := url.ParseRequestURI(raw); err != nil {
+			return errors.New("web: global_webhook_url must be a valid URL")
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.GlobalWebhookURL = raw
+	return s.persistLocked()
 }
 
 // PunchMACsUpper returns the 打卡设备 MACs as uppercase strings for

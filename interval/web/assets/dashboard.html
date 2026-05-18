@@ -88,6 +88,28 @@
     display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;
   }
 
+  /* ---------- Settings modal sections ---------- */
+  .set-sec {
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .set-sec:first-of-type { border-top: 0; padding-top: 0; }
+  .set-sec h4 {
+    margin: 0; font-size: 12px; font-weight: 600;
+    color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase;
+  }
+  .set-sec .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .set-sec input[type="url"] {
+    flex: 1; min-width: 0;
+    background: rgba(0,0,0,0.25); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 6px 8px; font-size: 13px;
+  }
+  .set-msg { font-size: 12px; color: var(--muted); }
+  .set-msg.ok { color: var(--online); }
+  .set-msg.err { color: var(--offline); }
+
   /* ---------- Layout ---------- */
   main {
     padding: 16px var(--pad-h-r) var(--pad-b) var(--pad-h);
@@ -460,11 +482,8 @@
     <span class="pill" id="conn" style="background: rgba(138,143,152,0.15); color: var(--muted);">连接中…</span>
     <span class="pill online" id="count-online" title="在线设备数">在线 0</span>
     <span class="pill offline" id="count-offline" title="离线设备数">离线 0</span>
-    <button id="btn-restart-net" class="hdr-btn" title="重启网络服务 (约 5-15 秒瞬断,保留配置)">重启网络</button>
-    <button id="btn-reboot" class="hdr-btn hdr-danger" title="重启路由器 (将断网 30-60 秒)">重启路由器</button>
     <button id="btn-version" class="hdr-btn" title="点击查看版本 / 检查更新" style="display:none">v?</button>
-    <button id="btn-passwd" class="hdr-btn" title="修改登录密码" style="display:none">🔑 改密</button>
-    <button id="btn-logout" class="hdr-btn" title="退出登录" style="display:none">⏻ 退出</button>
+    <button id="btn-settings" class="hdr-btn" title="系统设置" style="display:none">⚙ 设置</button>
   </span>
 </header>
 <main>
@@ -520,6 +539,56 @@
       <button class="hdr-btn" id="vm-close">关闭</button>
     </div>
   </div>
+</div>
+
+<!-- 系统设置 modal: 把 header 上原本一字排开的 4 个按钮 (重启网络 / 重启路由器 /
+     改密 / 退出) 收编, 再加一个全局 Webhook URL 字段。原 4 个按钮保留在
+     DOM 里 (display:none) 以便复用其上已绑定的 click 处理器, 这里的子按钮
+     只做一件事: simulate click 那些隐藏按钮。 -->
+<div class="modal-mask" id="settings-modal">
+  <div class="modal-card" style="max-width:520px">
+    <h3>⚙ 系统设置</h3>
+
+    <section class="set-sec">
+      <h4>全局通知 Webhook</h4>
+      <div class="meta">所有设备 ONLINE / OFFLINE 都会推一份到这里。留空 = 关闭。每设备 webhook (设备详情 → 信息设置) 仍独立工作, 互不替代。</div>
+      <div class="row">
+        <input type="url" id="set-global-webhook" placeholder="https://example.com/hook" autocomplete="off" spellcheck="false">
+        <button class="hdr-btn" id="set-save-webhook">保存</button>
+      </div>
+      <span class="set-msg" id="set-save-msg"></span>
+    </section>
+
+    <section class="set-sec">
+      <h4>账户</h4>
+      <div class="row">
+        <button class="hdr-btn" id="set-passwd">🔑 修改密码</button>
+        <button class="hdr-btn" id="set-logout">⏻ 退出登录</button>
+      </div>
+    </section>
+
+    <section class="set-sec">
+      <h4>系统</h4>
+      <div class="row">
+        <button class="hdr-btn" id="set-restart-net">重启网络</button>
+        <button class="hdr-btn hdr-danger" id="set-reboot">重启路由器</button>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button class="hdr-btn" id="set-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 兼容隐藏按钮: 现有 JS 已经在这些 ID 上挂了 click handler (重启网络 /
+     重启路由器 / 改密 / 退出); 设置 modal 里的子按钮通过 .click() 转发,
+     避免重写整套交互。 -->
+<div style="display:none">
+  <button id="btn-restart-net" class="hdr-btn">重启网络</button>
+  <button id="btn-reboot" class="hdr-btn hdr-danger">重启路由器</button>
+  <button id="btn-passwd" class="hdr-btn">🔑 改密</button>
+  <button id="btn-logout" class="hdr-btn">⏻ 退出</button>
 </div>
 
 <script>
@@ -2248,11 +2317,11 @@
       return r;
     };
 
-    // 探测一次 /api/devices, 200 才显示登出按钮
+    // 探测一次 /api/devices, 200 才显示设置按钮 (登出 / 改密在 modal 内)
     fetch("/api/devices").then(r => {
       if (r.ok) {
-        document.getElementById("btn-logout").style.display = "";
-        document.getElementById("btn-passwd").style.display = "";
+        const sb = document.getElementById("btn-settings");
+        if (sb) sb.style.display = "";
       }
     }).catch(() => {});
 
@@ -2281,6 +2350,91 @@
         }
       });
     });
+
+    // ---- 系统设置 modal ----
+    // header 上的 ⚙ 按钮: 打开时拉一次 /api/settings 把全局 webhook 填进
+    // 输入框; 子按钮 (重启网络/重启路由器/改密/退出) 通过转发 click 到
+    // 仍然挂在 DOM 中的隐藏按钮来复用已绑好的 handler。
+    (function wireSettingsModal() {
+      const settingsBtn = document.getElementById("btn-settings");
+      const sm          = document.getElementById("settings-modal");
+      if (!settingsBtn || !sm) return;
+      const inWebhook   = document.getElementById("set-global-webhook");
+      const saveBtn     = document.getElementById("set-save-webhook");
+      const saveMsg     = document.getElementById("set-save-msg");
+      const closeBtn    = document.getElementById("set-close");
+
+      function setMsg(text, kind) {
+        saveMsg.textContent = text || "";
+        saveMsg.className = "set-msg" + (kind ? " " + kind : "");
+      }
+
+      async function loadGlobalWebhook() {
+        setMsg("");
+        try {
+          const r = await fetch("/api/settings", { cache: "no-store" });
+          if (r.ok) {
+            const j = await r.json();
+            inWebhook.value = j.global_webhook_url || "";
+          }
+        } catch (_) { /* best-effort */ }
+      }
+
+      function openModal() {
+        sm.classList.add("show");
+        loadGlobalWebhook();
+      }
+      function closeModal() {
+        sm.classList.remove("show");
+      }
+
+      settingsBtn.addEventListener("click", openModal);
+      closeBtn.addEventListener("click", closeModal);
+      sm.addEventListener("click", (ev) => { if (ev.target === sm) closeModal(); });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && sm.classList.contains("show")) closeModal();
+      });
+
+      saveBtn.addEventListener("click", async () => {
+        const url = inWebhook.value.trim();
+        if (url && !/^https?:\/\//i.test(url)) {
+          setMsg("URL 需以 http:// 或 https:// 开头", "err");
+          return;
+        }
+        saveBtn.disabled = true;
+        const orig = saveBtn.textContent;
+        saveBtn.textContent = "保存中…";
+        try {
+          const r = await fetch("/api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ global_webhook_url: url }),
+          });
+          if (r.ok) {
+            setMsg(url ? "✓ 已保存" : "✓ 已关闭全局 webhook", "ok");
+          } else {
+            const b = await r.json().catch(() => ({}));
+            setMsg("保存失败: " + (b.error || r.status), "err");
+          }
+        } catch (e) {
+          setMsg("网络错误: " + e.message, "err");
+        } finally {
+          saveBtn.disabled = false;
+          saveBtn.textContent = orig;
+        }
+      });
+
+      // Forward modal sub-buttons → existing hidden handlers.
+      const forward = (modalId, hiddenId) => {
+        document.getElementById(modalId).addEventListener("click", () => {
+          document.getElementById(hiddenId).click();
+        });
+      };
+      forward("set-restart-net", "btn-restart-net");
+      forward("set-reboot",      "btn-reboot");
+      forward("set-passwd",      "btn-passwd");
+      forward("set-logout",      "btn-logout");
+    })();
 
     // ---- 版本号显示 + 在线检测升级 ----
     // header 上的版本徽章: 启动时立刻拉一次 /api/version 显示当前版本,
