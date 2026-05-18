@@ -507,6 +507,21 @@
   <code>GET /api/devices</code>
   <code>GET /api/events</code>
 </footer>
+
+<div class="modal-mask" id="version-modal">
+  <div class="modal-card">
+    <h3 id="vm-title">版本信息</h3>
+    <div class="meta" id="vm-meta">—</div>
+    <div class="notes" id="vm-notes">—</div>
+    <div class="actions">
+      <button class="hdr-btn" id="vm-recheck" title="忽略缓存重新查询">重新检查</button>
+      <button class="hdr-btn" id="vm-release" title="在 GitHub 打开此版本页">查看 Release</button>
+      <button class="hdr-btn hdr-update" id="vm-upgrade" style="display:none">立即升级</button>
+      <button class="hdr-btn" id="vm-close">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function () {
   "use strict";
@@ -2280,6 +2295,9 @@
     const vmRelease  = document.getElementById("vm-release");
     const vmRecheck  = document.getElementById("vm-recheck");
     const vmClose    = document.getElementById("vm-close");
+    // 防御: 如果 modal 节点没渲染上来 (比如老 HTML 还在浏览器缓存里),
+    // 就早 return, 让 logout/passwd 等其它按钮还能正常工作。
+    if (!versionBtn || !vmModal) return;
 
     let versionState = {
       current: "", upgradeOpen: false,
@@ -2420,19 +2438,5 @@
   })();
 })();
 </script>
-
-<div class="modal-mask" id="version-modal">
-  <div class="modal-card">
-    <h3 id="vm-title">版本信息</h3>
-    <div class="meta" id="vm-meta">—</div>
-    <div class="notes" id="vm-notes">—</div>
-    <div class="actions">
-      <button class="hdr-btn" id="vm-recheck" title="忽略缓存重新查询">重新检查</button>
-      <button class="hdr-btn" id="vm-release" title="在 GitHub 打开此版本页">查看 Release</button>
-      <button class="hdr-btn hdr-update" id="vm-upgrade" style="display:none">立即升级</button>
-      <button class="hdr-btn" id="vm-close">关闭</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>
