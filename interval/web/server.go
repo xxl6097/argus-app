@@ -31,7 +31,9 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -54,6 +56,17 @@ var faviconICO []byte
 
 //go:embed assets/login.html
 var loginHTML []byte
+
+// dashboardETag is computed once at process start from the embedded
+// HTML. It changes between releases (because the file content changes)
+// but is stable within a single binary's lifetime, so browsers cache
+// the page across navigations and only re-download after a redeploy.
+var dashboardETag = computeETag(dashboardHTML)
+
+func computeETag(b []byte) string {
+	sum := sha256.Sum256(b)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
+}
 
 // Defaults for the offline device cache. Override via Option at
 // construction time (see NewServer).
@@ -535,10 +548,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// no-cache + ETag: browser keeps the cached body but revalidates
+	// on every navigation. After a self-upgrade the embedded HTML
+	// changes → ETag changes → 200 with the new body. Old behaviour
+	// (max-age=300) silently served stale UI for 5 min after upgrade.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Conservative cache: the dashboard HTML is embedded in the binary,
-	// so a redeploy is required to change it. 5-min cache is fine.
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", dashboardETag)
+	if match := r.Header.Get("If-None-Match"); match != "" && match == dashboardETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	_, _ = w.Write(dashboardHTML)
 }
 

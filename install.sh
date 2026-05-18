@@ -258,6 +258,19 @@ main() {
         done
     fi
 
+    # procd stop 只会处理 /etc/init.d/$SVC_NAME 起的实例; 手动 nohup /
+    # setsid 跑的 argus-app 它管不到。剩下的进程会一直占着 9099, 让
+    # procd start 卡在 ErrAlreadyRunning。这里再扫一次, 把端口腾空。
+    if pidof argus-app >/dev/null 2>&1; then
+        log "发现仍有 argus-app 进程占用端口, 强制结束..."
+        killall argus-app 2>/dev/null || true
+        sleep 1
+        if pidof argus-app >/dev/null 2>&1; then
+            killall -9 argus-app 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+
     log "安装二进制 → $INSTALL_DIR/argus-app"
     install_bin "$src/argus-app" "$INSTALL_DIR/argus-app"
 
