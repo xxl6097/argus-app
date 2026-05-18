@@ -14,7 +14,7 @@ STOP=10
 
 PROG=/usr/bin/argus-app
 LISTEN="${LISTEN:-0.0.0.0:9099}"
-CONFIG_DIR="${CONFIG_DIR:-/etc/argusd}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/argus-app}"
 
 start_service() {
     [ -x "$PROG" ] || {

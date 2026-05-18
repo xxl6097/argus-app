@@ -51,15 +51,15 @@ var (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
-	aliasesPath := flag.String("aliases", "/etc/argusd/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
-	settingsPath := flag.String("settings", "/etc/argusd/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
-	overridesPath := flag.String("overrides", "/etc/argusd/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
-	notifyPath := flag.String("notifications", "/etc/argusd/notifications.json", "path to per-device webhook/ntfy configs; empty disables notifications tab")
-	credentialsPath := flag.String("credentials", "/etc/argusd/credentials.json", "path to web UI admin credentials (bcrypt); empty disables the login gate (dev only)")
-	holidaysPath := flag.String("holidays", "/etc/argusd/holidays.json", "path to manual legal holiday / 调休 workday calendar; empty disables manual entries")
-	holidaysSystemPath := flag.String("holidays-system", "/etc/argusd/holidays_system.json", "path to auto-fetched (timor.tech) holiday cache; empty disables auto-refresh")
+	aliasesPath := flag.String("aliases", "/etc/argus-app/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
+	settingsPath := flag.String("settings", "/etc/argus-app/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
+	overridesPath := flag.String("overrides", "/etc/argus-app/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
+	notifyPath := flag.String("notifications", "/etc/argus-app/notifications.json", "path to per-device webhook/ntfy configs; empty disables notifications tab")
+	credentialsPath := flag.String("credentials", "/etc/argus-app/credentials.json", "path to web UI admin credentials (bcrypt); empty disables the login gate (dev only)")
+	holidaysPath := flag.String("holidays", "/etc/argus-app/holidays.json", "path to manual legal holiday / 调休 workday calendar; empty disables manual entries")
+	holidaysSystemPath := flag.String("holidays-system", "/etc/argus-app/holidays_system.json", "path to auto-fetched (timor.tech) holiday cache; empty disables auto-refresh")
 	holidaysYearsAhead := flag.Int("holidays-years", 10, "how many years ahead to fetch on each refresh (current year + N-1 future). The State Council typically publishes only the current year, so unpublished years silently no-op.")
-	historyDir := flag.String("history-dir", "/etc/argusd/history", "directory for per-MAC online/offline history; empty disables history + worktime")
+	historyDir := flag.String("history-dir", "/etc/argus-app/history", "directory for per-MAC online/offline history; empty disables history + worktime")
 	flag.Parse()
 
 	if *showVersion {

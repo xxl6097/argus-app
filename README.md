@@ -185,7 +185,7 @@ install -m 0755 /tmp/argus-app.init /etc/init.d/argus-app
 # install -m 0755 /tmp/argus-app/packaging/openwrt/argus-app.init /etc/init.d/argus-app
 
 # 数据目录（持久化 JSON 都在这里）
-mkdir -p /etc/argusd /etc/argusd/history
+mkdir -p /etc/argus-app /etc/argus-app/history
 ```
 
 校验一下：
@@ -229,7 +229,7 @@ logread | grep argus-app | tail -20
 /etc/init.d/argus-app stop
 install -m 0755 /tmp/argus-app /usr/bin/argus-app
 /etc/init.d/argus-app start
-# /etc/argusd/ 下的数据无需任何处理，新版自动兼容旧格式
+# /etc/argus-app/ 下的数据无需任何处理，新版自动兼容旧格式
 ```
 
 **卸载**（保留数据）：
@@ -243,7 +243,7 @@ rm /usr/bin/argus-app /etc/init.d/argus-app
 **彻底清除**（含数据）：
 
 ```bash
-rm -rf /etc/argusd
+rm -rf /etc/argus-app
 ```
 
 ### 七、故障排查
@@ -253,7 +253,7 @@ rm -rf /etc/argusd
 | 启动后 `pidof argus-app` 为空 | `logread | tail -30` 看错误；常见是端口被占用或架构不匹配（`-bash: ./argus-app: cannot execute binary file`） |
 | 浏览器打不开 9099 | 防火墙是否拦截 LAN：`uci show firewall | grep input`；或换个端口 |
 | 上下线不刷新 | 本工具依赖 [argusd](https://github.com/xxl6097/argusd) 的探测能力，确认路由器有可用数据源（`hostapd-cli` / `dhcp.leases` 至少一种） |
-| 工时一直是 0 | 「设置」里 `work_start` / `work_end` 有没有保存？设备是否加入打卡集合？数据目录 `/etc/argusd/history/` 是否可写？ |
+| 工时一直是 0 | 「设置」里 `work_start` / `work_end` 有没有保存？设备是否加入打卡集合？数据目录 `/etc/argus-app/history/` 是否可写？ |
 | 节假日不更新 | 路由器是否能访问 `timor.tech`？`logread | grep -i holiday`；可手动在「工作时长」tab 上切换日子类型作为应急 |
 | 通知没收到 | `/api/notifications/test` 触发一次合成事件，看 webhook 服务端 / ntfy 客户端有无收到；URL 是否带协议前缀 `https://` |
 
@@ -263,7 +263,7 @@ rm -rf /etc/argusd
 
 - **单文件部署**：纯 Go，零外部依赖（HTML 嵌入二进制）。CGO 关闭，交叉编译到 ARM64
   跑在主流 OpenWrt 路由器上（MT7981、ipq60xx 等）。
-- **零侵入**：不动路由器原生功能。所有持久化都在 `/etc/argusd/*.json` 单独管理。
+- **零侵入**：不动路由器原生功能。所有持久化都在 `/etc/argus-app/*.json` 单独管理。
 - **本地优先**：默认绑定 `0.0.0.0:9099`，按 RFC1918 网段做写权限控制，不需要鉴权服务。
 - **自治**：每天凌晨从公开 API 拉取国家法定节假日，省下手工维护。
 
@@ -450,14 +450,14 @@ GO_BIN=/usr/local/go/bin/go \
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `-listen` | `""`（关闭 Web UI） | Web 监听地址，例 `0.0.0.0:9099` |
-| `-aliases` | `/etc/argusd/aliases.json` | MAC 别名存储 |
-| `-settings` | `/etc/argusd/settings.json` | 打卡设备 + 标准工时 |
-| `-overrides` | `/etc/argusd/overrides.json` | 手动工时覆写（按月嵌套） |
-| `-notifications` | `/etc/argusd/notifications.json` | Webhook / ntfy 配置 |
-| `-holidays` | `/etc/argusd/holidays.json` | 用户手动节假日（不被自动刷新触碰） |
-| `-holidays-system` | `/etc/argusd/holidays_system.json` | 自动拉取的节假日缓存 |
+| `-aliases` | `/etc/argus-app/aliases.json` | MAC 别名存储 |
+| `-settings` | `/etc/argus-app/settings.json` | 打卡设备 + 标准工时 |
+| `-overrides` | `/etc/argus-app/overrides.json` | 手动工时覆写（按月嵌套） |
+| `-notifications` | `/etc/argus-app/notifications.json` | Webhook / ntfy 配置 |
+| `-holidays` | `/etc/argus-app/holidays.json` | 用户手动节假日（不被自动刷新触碰） |
+| `-holidays-system` | `/etc/argus-app/holidays_system.json` | 自动拉取的节假日缓存 |
 | `-holidays-years` | `10` | 拉取年数（当年 + 未来 N−1） |
-| `-history-dir` | `/etc/argusd/history` | 上下线历史目录 |
+| `-history-dir` | `/etc/argus-app/history` | 上下线历史目录 |
 
 任意路径置空（`-foo=""`）即禁用对应功能。
 

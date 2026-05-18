@@ -64,7 +64,7 @@ ssh root@192.168.1.1 'logread -e argus-app -f'
 
 ```sh
 LISTEN="${LISTEN:-0.0.0.0:9099}"
-CONFIG_DIR="${CONFIG_DIR:-/etc/argusd}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/argus-app}"
 ```
 
 只想暴露给内网回环,把 `LISTEN` 改成 `127.0.0.1:9099` 再反代(nginx/caddy)。
@@ -87,7 +87,7 @@ ssh root@192.168.1.1 '
     /etc/init.d/argus-app disable
     rm -f /usr/bin/argus-app /etc/init.d/argus-app
     # 以下目录保存了你的考勤数据,按需选择保留或删除:
-    # rm -rf /etc/argusd
+    # rm -rf /etc/argus-app
 '
 ```
 
@@ -106,8 +106,8 @@ netstat -lntp | grep 9099
 
 **配置文件写失败**:
 ```bash
-ls -la /etc/argusd/
-# 确保 /etc/argusd 目录存在且 root 可写
+ls -la /etc/argus-app/
+# 确保 /etc/argus-app 目录存在且 root 可写
 ```
 
 **想看 notifier 发送详情**:

@@ -5,7 +5,7 @@
 #   /usr/bin/argus-app                 — 二进制
 #   /etc/init.d/argus-app              — procd init 脚本 (USE_PROCD=1)
 #   /etc/rc.d/S95argus-app  → ../init.d/argus-app  — 开机自启软链
-#   /etc/argusd/                       — 持久化数据 (aliases/settings/history...)
+#   /etc/argus-app/                       — 持久化数据 (aliases/settings/history...)
 #
 # 直接在路由器上执行：
 #   wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
@@ -29,7 +29,7 @@ REPO="xxl6097/argus-app"
 INSTALL_DIR="/usr/bin"
 INIT_DIR="/etc/init.d"
 RC_DIR="/etc/rc.d"
-DATA_DIR="/etc/argusd"
+DATA_DIR="/etc/argus-app"
 SVC_NAME="argus-app"
 TMP_DIR="${TMPDIR:-/tmp}/argus-app-install.$$"
 
