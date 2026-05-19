@@ -1,10 +1,11 @@
 name: ci
 
+# Tag-only: 跑 vet / test / 跨编译 5 架构, 与 release.yml 同时触发,
+# 把发版前的检查跟实际打包绑在同一次 ref-bump 上。push 到 main 不
+# 再跑 CI; 想本地验证就 `go test ./...` + `go build ./...`。
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags: [ 'v*.*.*' ]
 
 jobs:
   build:

@@ -1,6 +1,5 @@
 # argus-app
 
-[![CI](https://github.com/xxl6097/argus-app/actions/workflows/ci.yml/badge.svg)](https://github.com/xxl6097/argus-app/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/xxl6097/argus-app?include_prereleases&sort=semver)](https://github.com/xxl6097/argus-app/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/xxl6097/argus-app)](go.mod)
@@ -10,7 +9,10 @@
 路由器把 WiFi 上线时间当作"打卡"，离线当作"下班"，自动算出每天的在岗时长、加班时长、迟到 / 早退状态，
 按月汇总并推送到 Webhook / ntfy。
 
-> 名字虽叫 `argus-app`，仪表板上的对外标题已经改成了 **WiFi 考勤 · 工时统计**。
+> 发布流程: `git tag vX.Y.Z && git push --tags` 触发 CI + Release 两个工作流;
+> 跨编译 5 个架构 (linux arm64 / armv7 / amd64 / mips / mipsle), 上传到 GitHub Releases。
+> 推到 main 分支本身不跑 CI — 本地用 `go test ./... && go build ./...` 验证就好。
+
 
 ## 目录
 
@@ -191,8 +193,11 @@ mkdir -p /etc/argus-app /etc/argus-app/history
 校验一下：
 
 ```bash
-argus-app -version
+argus-app -version            # 或 argus-app -v
 # 输出形如：argus-app v0.1.0 (commit abc1234, built 2026-05-14T...)
+
+argus-app -help               # 或 argus-app -h, argus-app help
+# 打印中文帮助: 用法 / 安装 / 卸载 / 服务管理 / 信号 / 完整选项
 ```
 
 ### 四、启动并设置开机自启
@@ -529,11 +534,13 @@ GO_BIN=/usr/local/go/bin/go \
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
+| `-version` / `-v` / `version` | — | 打印版本号并退出 |
+| `-help` / `-h` / `--help` / `help` | — | 打印中文帮助 (用法 + 安装 + 卸载 + 服务管理 + 完整选项) 并退出 |
 | `-listen` | `""`（关闭 Web UI） | Web 监听地址，例 `0.0.0.0:9099` |
 | `-data-dir` | `/etc/argus-app` | 数据根目录，`/api/backup/export\|import` 以此为源 |
 | `-credentials` | `/etc/argus-app/credentials.json` | 登录凭据（bcrypt 哈希 + 用户名）；置空禁用登录 |
 | `-aliases` | `/etc/argus-app/aliases.json` | MAC 别名存储 |
-| `-settings` | `/etc/argus-app/settings.json` | 打卡设备 + 标准工时 + 全局 Webhook |
+| `-settings` | `/etc/argus-app/settings.json` | 打卡设备 + 标准工时 + 全局 Webhook + 钉钉关键词 |
 | `-overrides` | `/etc/argus-app/overrides.json` | 手动工时覆写（按月嵌套） |
 | `-notifications` | `/etc/argus-app/notifications.json` | Webhook / ntfy 配置 |
 | `-holidays` | `/etc/argus-app/holidays.json` | 用户手动节假日（不被自动刷新触碰） |
@@ -542,6 +549,8 @@ GO_BIN=/usr/local/go/bin/go \
 | `-history-dir` | `/etc/argus-app/history` | 上下线历史目录 |
 
 任意路径置空（`-foo=""`）即禁用对应功能。
+
+`argus-app -h` 是最完整的速查表 — 同一份内容会跟着二进制走, 适合 SSH 上路由器后忘记某条命令时直接看。
 
 ### 4. 信号
 
