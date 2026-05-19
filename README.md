@@ -38,15 +38,38 @@
 ## 界面截图
 
 <div align="center">
-  <img src="docs/screenshots/dashboard-overview.png" alt="主页全景" width="780">
-  <br>
-  <img src="docs/screenshots/worktime-tab.png" alt="工作时长" width="780">
-  <br>
-  <img src="docs/screenshots/monthly-stats.png" alt="月统计" width="780">
+
+**主页全景** — 设备列表 + 「设为打卡」 / 「踢下线」 徽章 + 顶部 ⚙ 设置 / 版本徽章
+
+<img src="docs/screenshots/dashboard-overview.png" alt="主页全景" width="780">
+
+**设备详情面板** — 单台设备点开后的多 tab 视图
+
+<img src="docs/screenshots/device-detail.png" alt="设备详情" width="780">
+
+**📊 工作时长 tab** — 月度汇总 + 每日列表 + 状态徽章
+
+<img src="docs/screenshots/worktime-tab.png" alt="工作时长" width="780">
+
+**📅 月统计 tab** — 近 12 月聚合 + 顶部 5 列汇总
+
+<img src="docs/screenshots/monthly-stats.png" alt="月统计" width="780">
+
+**⚙ 信息设置 tab** — 每设备 Webhook + ntfy + res 主题消息
+
+<img src="docs/screenshots/notify-tab.png" alt="信息设置" width="780">
+
+**⚙ 系统设置 modal** — 全局通知 / 钉钉关键词 / 账户 / 系统 / 备份与恢复
+
+<img src="docs/screenshots/settings.png" alt="系统设置" width="780">
+
+**版本徽章 + 在线检测升级** — 发现新版变橙 + 🆙, 一键升级
+
+<img src="docs/screenshots/upgrade.png" alt="在线升级" width="780">
+
 </div>
 
-> 截图缺失？在 [`docs/screenshots/`](docs/screenshots/README.md) 里看命名规范并提交你的实机截图。
-
+> 想替换截图？看 [`docs/screenshots/README.md`](docs/screenshots/README.md) 的命名规范, 用 `mask_macs.py` 处理隐私后提交。
 ## 快速开始
 
 ### 方式 0：一键脚本（最简）
