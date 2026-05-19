@@ -2086,7 +2086,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	source := s.sourceFor(e)
 	sourceText := sourceLabel(source)
 
-	base := s.formatNotifyMarkdown(e, when, displayName, alias, mac, isPunch, sourceText)
+	base := s.formatNotifyMarkdown(e, when, displayName, mac, isPunch, sourceText)
 	if source != "" {
 		base["source"] = source
 	}
@@ -2129,7 +2129,7 @@ func clonePayload(in map[string]any) map[string]any {
 // total); everything else gets the lightweight "上线啦/下线啦" form.
 // sourceText is the Chinese attribution (sourceLabel(...)); empty
 // string skips the line.
-func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName, alias, mac string, isPunch bool, sourceText string) map[string]any {
+func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName, mac string, isPunch bool, sourceText string) map[string]any {
 	when = when.In(time.Local)
 	dateStr := when.Format("2006-01-02")
 	weekday := chineseWeekdays[int(when.Weekday())]
@@ -2220,10 +2220,10 @@ func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName
 		fmt.Fprintf(&b, "- 消息时间：%s", clockMs)
 	}
 	payload := map[string]any{}
-	markdown["title"] = fmt.Sprintf("【%s】%s", alias, verb)
+	payload["msgtype"] = "markdown"
+	markdown["title"] = fmt.Sprintf("【%s】%s", displayName, verb)
 	markdown["text"] = b.String()
 	payload["markdown"] = markdown
-	payload["msgtype"] = "markdown"
 	return payload
 }
 
