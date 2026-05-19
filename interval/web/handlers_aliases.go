@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // handleAliases multiplexes GET / POST / DELETE on /api/aliases.
@@ -67,7 +68,7 @@ func (s *Server) handleAliasesSet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":   true,
-		"mac":  strings.ToUpper(normalizeMAC(in.MAC)),
+		"mac":  strings.ToUpper(util.NormalizeMAC(in.MAC)),
 		"name": strings.TrimSpace(in.Name),
 	})
 }

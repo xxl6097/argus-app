@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"github.com/xxl6097/argus-app/interval/release"
 )
 
 // handleVersion returns the running binary's identity. Cheap, no
@@ -78,7 +79,7 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 		"current":     s.version.Version,
 		"latest":      rel.TagName,
 		"name":        rel.Name,
-		"has_update":  HasUpdate(s.version.Version, rel.TagName),
+		"has_update":  release.HasUpdate(s.version.Version, rel.TagName),
 		"release_url": rel.HTMLURL,
 		"notes":       rel.Body,
 		"prerelease":  rel.Prerelease,
@@ -120,7 +121,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 	// Body is optional; ignore decode errors so an empty POST works.
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in)
 	target := strings.TrimSpace(in.Version)
-	if err := triggerUpgrade(target); err != nil {
+	if err := release.TriggerUpgrade(target); err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "spawn upgrade: "+err.Error())
 		return
 	}

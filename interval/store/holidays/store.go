@@ -1,4 +1,4 @@
-package web
+package holidays
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func (k DayKind) String() string {
 	return ""
 }
 
-// HolidayStore is a JSON-file-backed map of YYYY-MM-DD -> "holiday"
+// Store is a JSON-file-backed map of YYYY-MM-DD -> "holiday"
 // or "workday". It now has two layers:
 //
 //  1. Manual (data): user-set via UI, persisted to path, never auto-cleared.
@@ -71,7 +71,7 @@ func (k DayKind) String() string {
 // Days not in either store default to:
 //   - Saturday/Sunday => Weekend (OT)
 //   - Monday-Friday   => Workday
-type HolidayStore struct {
+type Store struct {
 	path       string
 	systemPath string
 
@@ -84,19 +84,19 @@ type HolidayStore struct {
 	wg          sync.WaitGroup
 }
 
-// NewHolidayStore constructs a store backed by path (manual entries
-// only). Use NewHolidayStoreWithSystem to enable auto-fetch too.
+// New constructs a store backed by path (manual entries
+// only). Use NewWithSystem to enable auto-fetch too.
 // Empty path = in-memory only. Missing / corrupt file = empty defaults.
-func NewHolidayStore(path string) *HolidayStore {
-	return NewHolidayStoreWithSystem(path, "")
+func New(path string) *Store {
+	return NewWithSystem(path, "")
 }
 
-// NewHolidayStoreWithSystem adds an auto-fetched system layer on top
+// NewWithSystem adds an auto-fetched system layer on top
 // of the manual layer. systemPath is where the API response cache is
 // persisted — on empty string the system layer stays in-memory.
 // Call StartAutoRefresh to kick off daily updates.
-func NewHolidayStoreWithSystem(path, systemPath string) *HolidayStore {
-	s := &HolidayStore{
+func NewWithSystem(path, systemPath string) *Store {
+	s := &Store{
 		path:       path,
 		systemPath: systemPath,
 		data:       make(map[string]string),
@@ -109,7 +109,7 @@ func NewHolidayStoreWithSystem(path, systemPath string) *HolidayStore {
 
 // Reload re-reads holidays.json + holidays_system.json from disk.
 // Used after backup import overwrites the JSON files.
-func (s *HolidayStore) Reload() {
+func (s *Store) Reload() {
 	s.mu.Lock()
 	s.data = make(map[string]string)
 	s.systemData = make(map[string]string)
@@ -122,7 +122,7 @@ func (s *HolidayStore) Reload() {
 // currently empty (first-run convenience). Best-effort; errors are
 // silently dropped — the user can always edit the file by hand
 // afterwards.
-func (s *HolidayStore) SeedDefaultsIfEmpty(defaults map[string]string) {
+func (s *Store) SeedDefaultsIfEmpty(defaults map[string]string) {
 	s.mu.Lock()
 	empty := len(s.data) == 0
 	if empty {
@@ -193,7 +193,7 @@ func CN2026Holidays() map[string]string {
 	}
 }
 
-func (s *HolidayStore) load() {
+func (s *Store) load() {
 	if s.path == "" {
 		return
 	}
@@ -221,7 +221,7 @@ func (s *HolidayStore) load() {
 // Kind returns the DayKind for t in t's location. Looks up the
 // manual layer first (so user intent always wins), falls back to the
 // auto-fetched system layer, and finally to weekday/weekend detection.
-func (s *HolidayStore) Kind(t time.Time) DayKind {
+func (s *Store) Kind(t time.Time) DayKind {
 	key := t.Format("2006-01-02")
 	s.mu.RLock()
 	v, ok := s.data[key]
@@ -254,7 +254,7 @@ func (s *HolidayStore) Kind(t time.Time) DayKind {
 // All returns a snapshot of both layers merged (manual wins on
 // conflict). Primarily used by /api/holidays GET — the wire format
 // stays flat for backward compat.
-func (s *HolidayStore) All() map[string]string {
+func (s *Store) All() map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]string, len(s.data)+len(s.systemData))
@@ -269,7 +269,7 @@ func (s *HolidayStore) All() map[string]string {
 
 // AllWithSource returns both layers separately so callers (e.g. the
 // dashboard) can distinguish user-set entries from auto-fetched ones.
-func (s *HolidayStore) AllWithSource() (manual, system map[string]string) {
+func (s *Store) AllWithSource() (manual, system map[string]string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	manual = make(map[string]string, len(s.data))
@@ -285,10 +285,10 @@ func (s *HolidayStore) AllWithSource() (manual, system map[string]string) {
 
 // Set writes or clears a date entry. kind must be "holiday", "workday",
 // or "" (remove). date must be YYYY-MM-DD.
-func (s *HolidayStore) Set(date, kind string) error {
+func (s *Store) Set(date, kind string) error {
 	date = strings.TrimSpace(date)
 	if _, err := time.Parse("2006-01-02", date); err != nil {
-		return errors.New("web: holiday date must be YYYY-MM-DD")
+		return errors.New("holidays: holiday date must be YYYY-MM-DD")
 	}
 	kind = strings.TrimSpace(strings.ToLower(kind))
 	s.mu.Lock()
@@ -298,12 +298,12 @@ func (s *HolidayStore) Set(date, kind string) error {
 	} else if kind == "holiday" || kind == "workday" || kind == "otday" {
 		s.data[date] = kind
 	} else {
-		return errors.New("web: kind must be 'holiday', 'workday', 'otday', or empty")
+		return errors.New("holidays: kind must be 'holiday', 'workday', 'otday', or empty")
 	}
 	return s.persistLocked()
 }
 
-func (s *HolidayStore) persistLocked() error {
+func (s *Store) persistLocked() error {
 	if s.path == "" {
 		return nil
 	}
@@ -325,7 +325,7 @@ func (s *HolidayStore) persistLocked() error {
 
 // loadSystem reads systemPath if present; missing / corrupt file is
 // silently treated as empty. The next FetchSystem() call will repopulate.
-func (s *HolidayStore) loadSystem() {
+func (s *Store) loadSystem() {
 	if s.systemPath == "" {
 		return
 	}
@@ -350,7 +350,7 @@ func (s *HolidayStore) loadSystem() {
 	s.mu.Unlock()
 }
 
-func (s *HolidayStore) persistSystemLocked() error {
+func (s *Store) persistSystemLocked() error {
 	if s.systemPath == "" {
 		return nil
 	}
@@ -451,7 +451,7 @@ func fetchYear(ctx context.Context, client *http.Client, year int) (map[string]s
 //
 // Returns the number of years that fetched successfully and the
 // last error (if any).
-func (s *HolidayStore) FetchSystem(ctx context.Context, yearsAhead int) (int, error) {
+func (s *Store) FetchSystem(ctx context.Context, yearsAhead int) (int, error) {
 	if yearsAhead <= 0 {
 		yearsAhead = 1
 	}
@@ -518,7 +518,7 @@ func (s *HolidayStore) FetchSystem(ctx context.Context, yearsAhead int) (int, er
 //
 // Safe to call multiple times; subsequent calls are no-ops once a
 // goroutine is already running. Stop with StopAutoRefresh on shutdown.
-func (s *HolidayStore) StartAutoRefresh(yearsAhead int) {
+func (s *Store) StartAutoRefresh(yearsAhead int) {
 	s.mu.Lock()
 	if s.stopRefresh != nil {
 		s.mu.Unlock()
@@ -553,7 +553,7 @@ func (s *HolidayStore) StartAutoRefresh(yearsAhead int) {
 
 // StopAutoRefresh signals the refresh goroutine to exit and waits
 // for it. Idempotent.
-func (s *HolidayStore) StopAutoRefresh() {
+func (s *Store) StopAutoRefresh() {
 	s.mu.Lock()
 	stop := s.stopRefresh
 	s.stopRefresh = nil

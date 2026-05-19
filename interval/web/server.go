@@ -7,8 +7,8 @@
 // files for readability:
 //
 //   - server.go (this file) — Options, the Server struct, NewServer,
-//     ServeHTTP, the small shared helpers (writeJSONErr, normalizeMAC,
-//     nonZeroTime, dayKindFor)
+//     ServeHTTP, the small shared helpers (writeJSONErr, util.NormalizeMAC,
+//     util.NonZeroTime, dayKindFor)
 //   - auth.go              — login session middleware + login/logout/
 //     password endpoints + the LAN-auth predicate
 //   - events.go            — OnEvent / OnSyslog / SSE stream / offline
@@ -44,10 +44,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/xxl6097/argus-app/interval/owrt"
+	"github.com/xxl6097/argus-app/interval/release"
+	"github.com/xxl6097/argus-app/interval/store/alias"
+	"github.com/xxl6097/argus-app/interval/store/credentials"
+	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/store/holidays"
+	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/settings"
 	argus "github.com/xxl6097/argusd"
 )
 
@@ -71,7 +79,7 @@ func computeETag(b []byte) string {
 	return `"` + hex.EncodeToString(sum[:8]) + `"`
 }
 
-// Defaults for the offline device cache. Override via Option at
+// Defaults for the offline device cache. override.Override via Option at
 // construction time (see NewServer).
 const (
 	defaultOfflineRetention = 7 * 24 * time.Hour
@@ -114,7 +122,7 @@ func WithOfflineMax(n int) Option {
 //
 // Passing nil is a no-op (equivalent to the default). The store itself
 // is safe for concurrent use.
-func WithAliases(store *AliasStore) Option {
+func WithAliases(store *alias.Store) Option {
 	return func(s *Server) { s.aliases = store }
 }
 
@@ -141,27 +149,27 @@ func WithWriteAuth(check AuthCheck) Option {
 // button on every device row. Passing nil is a no-op (equivalent to
 // the default — the endpoint returns 503 and the dashboard hides
 // the button).
-func WithDHCPManager(m DHCPManager) Option {
+func WithDHCPManager(m owrt.DHCPManager) Option {
 	return func(s *Server) { s.dhcp = m }
 }
 
 // WithHistory attaches a per-MAC online/offline history store. When
 // set, /api/history and /api/worktime are enabled and OnEvent records
 // Online/Offline transitions. nil is the default (feature disabled).
-func WithHistory(h *HistoryStore) Option {
+func WithHistory(h *history.Store) Option {
 	return func(s *Server) { s.history = h }
 }
 
 // WithSettings attaches a persistent settings store (worktime window,
 // "me" MAC). Enables /api/settings when non-nil.
-func WithSettings(st *SettingsStore) Option {
+func WithSettings(st *settings.Store) Option {
 	return func(s *Server) { s.settings = st }
 }
 
 // WithOverrides attaches a per-(mac, date) manual in/out override
 // store. Used for worktime days where the Watcher missed transitions.
 // Enables /api/worktime/override when non-nil.
-func WithOverrides(o *OverrideStore) Option {
+func WithOverrides(o *override.Store) Option {
 	return func(s *Server) { s.overrides = o }
 }
 
@@ -169,7 +177,7 @@ func WithOverrides(o *OverrideStore) Option {
 // worktime compute can treat weekends and public holidays as
 // overtime days. When nil, only the weekday-vs-weekend heuristic
 // applies (Saturday/Sunday always = OT day).
-func WithHolidays(h *HolidayStore) Option {
+func WithHolidays(h *holidays.Store) Option {
 	return func(s *Server) { s.holidays = h }
 }
 
@@ -178,11 +186,11 @@ func WithHolidays(h *HolidayStore) Option {
 // requests without one are redirected to /login (HTML clients) or
 // returned 401 (JSON / SSE clients). Pass nil to disable the login
 // gate entirely (default).
-func WithCredentials(store *CredentialsStore) Option {
+func WithCredentials(store *credentials.Store) Option {
 	return func(s *Server) {
 		s.creds = store
 		if store != nil && s.sessions == nil {
-			s.sessions = NewSessionStore()
+			s.sessions = credentials.NewSessionStore()
 		}
 	}
 }
@@ -194,11 +202,11 @@ func WithCredentials(store *CredentialsStore) Option {
 // published install.sh).
 //
 // repo format: "owner/name" — e.g. "xxl6097/argus-app".
-func WithVersion(v VersionInfo, repo string) Option {
+func WithVersion(v release.VersionInfo, repo string) Option {
 	return func(s *Server) {
 		s.version = v
 		if repo != "" {
-			s.versionSvc = NewVersionService(repo)
+			s.versionSvc = release.NewVersionService(repo)
 		}
 	}
 }
@@ -207,7 +215,7 @@ func WithVersion(v VersionInfo, repo string) Option {
 // dispatcher that fans events out to webhook + ntfy.  When set,
 // OnEvent fires webhooks and ntfy publishes, and /api/notifications
 // / /api/notifications/messages endpoints are served.
-func WithNotifications(store *NotifyStore, notifier *Notifier) Option {
+func WithNotifications(store *notify.Store, notifier *notify.Notifier) Option {
 	return func(s *Server) {
 		s.notifyStore = store
 		s.notifier = notifier
@@ -240,36 +248,36 @@ type Server struct {
 	// aliases is an optional user-managed MAC -> friendly-name store.
 	// When non-nil, /api/devices rows carry an `alias` field and the
 	// dashboard prefers it for display. nil means "no alias feature".
-	aliases *AliasStore
+	aliases *alias.Store
 
 	// dhcp is an optional router-specific manager for static DHCP
 	// reservations. Exposes /api/dhcp when non-nil; the dashboard
 	// hides the "set static IP" UI when nil.
-	dhcp DHCPManager
+	dhcp owrt.DHCPManager
 
 	// history persists per-MAC ONLINE/OFFLINE transitions for the
 	// expandable-row timeline and the worktime report. nil disables
 	// both /api/history and /api/worktime.
-	history *HistoryStore
+	history *history.Store
 
 	// settings is the user-configurable "me MAC + workday window"
 	// store. nil disables /api/settings and /api/worktime.
-	settings *SettingsStore
+	settings *settings.Store
 
 	// overrides is the per-(mac, date) manual in/out store. Lets the
 	// user fix worktime days where the Watcher missed transitions.
 	// nil disables /api/worktime/override.
-	overrides *OverrideStore
+	overrides *override.Store
 
 	// holidays tags dates as legal holidays / 调休 workdays so
 	// the worktime compute can special-case them as OT days.
 	// nil = weekday/weekend heuristic only.
-	holidays *HolidayStore
+	holidays *holidays.Store
 
 	// notifyStore is the per-device webhook + ntfy config store.
 	// notifier dispatches events to those destinations.
-	notifyStore *NotifyStore
-	notifier    *Notifier
+	notifyStore *notify.Store
+	notifier    *notify.Notifier
 
 	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
 	// means the default (currently a noop pass-through).
@@ -280,14 +288,14 @@ type Server struct {
 	// the legacy / dev path where the dashboard is exposed unauthenticated.
 	// When creds is non-nil, every route except /login + /api/login +
 	// /favicon.ico requires a valid session cookie.
-	creds    *CredentialsStore
-	sessions *SessionStore
+	creds    *credentials.Store
+	sessions *credentials.SessionStore
 
 	// version is the build-stamped identity of this binary, surfaced
 	// at /api/version. versionSvc handles GitHub probing + cache and
 	// drives the "check for upgrades" flow when non-nil.
-	version    VersionInfo
-	versionSvc *VersionService
+	version    release.VersionInfo
+	versionSvc *release.VersionService
 
 	// syslogHints is a per-MAC short-lived cache of the most recent
 	// syslog event seen for each direction (connect / disconnect).
@@ -379,7 +387,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 // History returns the attached HistoryStore, or nil when history
 // is disabled. Useful for embedders that want to seed baseline
 // ONLINE entries on startup.
-func (s *Server) History() *HistoryStore { return s.history }
+func (s *Server) History() *history.Store { return s.history }
 
 // RefreshNotifySubs rebuilds ntfy subscriptions. Exposed so the
 // process owner can trigger it once after the watcher has populated
@@ -399,31 +407,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// dayKindFor returns the DayKind for t, consulting the HolidayStore
+// dayKindFor returns the holidays.DayKind for t, consulting the HolidayStore
 // when attached and falling back to weekday/weekend detection.
-func (s *Server) dayKindFor(t time.Time) DayKind {
+func (s *Server) dayKindFor(t time.Time) holidays.DayKind {
 	if s.holidays != nil {
 		return s.holidays.Kind(t)
 	}
 	wd := t.Weekday()
 	if wd == time.Saturday || wd == time.Sunday {
-		return DayKindWeekend
+		return holidays.DayKindWeekend
 	}
-	return DayKindWorkday
+	return holidays.DayKindWorkday
 }
 
 // --- Small shared helpers used across the handler files ---
-
-func normalizeMAC(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
-}
-
-func nonZeroTime(t time.Time) time.Time {
-	if t.IsZero() {
-		return time.Now()
-	}
-	return t
-}
+//
+// MAC / time normalisation lives in interval/util now; this file
+// keeps only the HTTP-shaped helpers.
 
 func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

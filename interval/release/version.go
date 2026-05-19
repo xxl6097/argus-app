@@ -15,7 +15,7 @@
 //
 // The upgrade script is detached via setsid so that it survives
 // argus-app's own death during the upgrade.
-package web
+package release
 
 import (
 	"context"
@@ -230,13 +230,13 @@ func atoiSafe(s string) (int, error) {
 	return n, nil
 }
 
-// triggerUpgrade writes a detached bootstrap script that downloads
+// TriggerUpgrade writes a detached bootstrap script that downloads
 // the published install.sh and re-execs it under VERSION=<targetTag>.
 // Returns immediately; the actual stop/swap/start happens in the
 // background and the user is told to refresh the page.
 //
 // targetTag empty → install.sh resolves "latest" itself.
-func triggerUpgrade(targetTag string) error {
+func TriggerUpgrade(targetTag string) error {
 	// Prefer mirror by default — direct GitHub is often unreachable
 	// from CN routers, and install.sh has its own mirror fallback
 	// anyway, but we still need to fetch install.sh itself first.

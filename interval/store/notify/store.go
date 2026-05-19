@@ -13,7 +13,7 @@
 // Everything is best-effort. Missing endpoints, network failures,
 // invalid responses are all logged and shrugged off — the dispatcher
 // never blocks the watcher or the HTTP API.
-package web
+package notify
 
 import (
 	"bytes"
@@ -32,6 +32,8 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/util"
+	"github.com/xxl6097/argus-app/interval/store/alias"
 )
 
 // NotifyConfig is the per-device notification setup. Empty fields
@@ -62,21 +64,21 @@ func (c NotifyConfig) HasNtfySubscribe() bool {
 	return strings.TrimSpace(c.NtfyServer) != "" && strings.TrimSpace(c.NtfyResTopic) != ""
 }
 
-// NotifyStore persists per-device notification configs, mirroring
+// Store persists per-device notification configs, mirroring
 // AliasStore / OverrideStore patterns. On-disk keys prefer the current
 // alias (when attached), falling back to MAC for unaliased devices.
-type NotifyStore struct {
+type Store struct {
 	path    string
-	aliases *AliasStore
+	aliases *alias.Store
 
 	mu   sync.RWMutex
 	data map[string]NotifyConfig // key = alias or MAC
 }
 
-// NewNotifyStore constructs a store backed by path. aliases is optional
+// New constructs a store backed by path. aliases is optional
 // — when attached, on-disk keys use alias (if set) instead of MAC.
-func NewNotifyStore(path string, aliases *AliasStore) *NotifyStore {
-	s := &NotifyStore{
+func New(path string, aliases *alias.Store) *Store {
+	s := &Store{
 		path:    path,
 		aliases: aliases,
 		data:    make(map[string]NotifyConfig),
@@ -87,14 +89,14 @@ func NewNotifyStore(path string, aliases *AliasStore) *NotifyStore {
 
 // Reload re-reads the notify config file from disk. Used after backup
 // import overwrites the JSON file.
-func (s *NotifyStore) Reload() {
+func (s *Store) Reload() {
 	s.mu.Lock()
 	s.data = make(map[string]NotifyConfig)
 	s.mu.Unlock()
 	s.load()
 }
 
-func (s *NotifyStore) load() {
+func (s *Store) load() {
 	if s.path == "" {
 		return
 	}
@@ -126,8 +128,8 @@ func (s *NotifyStore) load() {
 
 // keyFor resolves a MAC to its storage key: alias when one exists
 // and aliases is attached, otherwise normalized MAC.
-func (s *NotifyStore) keyFor(mac string) string {
-	mac = normalizeMAC(mac)
+func (s *Store) keyFor(mac string) string {
+	mac = util.NormalizeMAC(mac)
 	if mac == "" {
 		return ""
 	}
@@ -141,7 +143,7 @@ func (s *NotifyStore) keyFor(mac string) string {
 
 // Lookup returns the config for a MAC, falling back to legacy MAC-keyed
 // entries when no alias is configured.
-func (s *NotifyStore) Lookup(mac string) (NotifyConfig, bool) {
+func (s *Store) Lookup(mac string) (NotifyConfig, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if key := s.keyFor(mac); key != "" {
@@ -149,7 +151,7 @@ func (s *NotifyStore) Lookup(mac string) (NotifyConfig, bool) {
 			return c, true
 		}
 	}
-	macKey := normalizeMAC(mac)
+	macKey := util.NormalizeMAC(mac)
 	if c, ok := s.data[macKey]; ok {
 		return c, true
 	}
@@ -168,10 +170,10 @@ func (s *NotifyStore) Lookup(mac string) (NotifyConfig, bool) {
 // it impossible for code paths like "alias rename" or "subscription
 // reconcile" to silently nuke a row by passing an empty cfg. To remove
 // a row, callers must invoke Delete(mac) explicitly.
-func (s *NotifyStore) Set(mac string, cfg NotifyConfig) error {
-	macKey := normalizeMAC(mac)
+func (s *Store) Set(mac string, cfg NotifyConfig) error {
+	macKey := util.NormalizeMAC(mac)
 	if macKey == "" {
-		return errors.New("web: notify mac required")
+		return errors.New("notify: notify mac required")
 	}
 	cfg.WebhookURL = strings.TrimSpace(cfg.WebhookURL)
 	cfg.NtfyServer = strings.TrimSpace(cfg.NtfyServer)
@@ -181,12 +183,12 @@ func (s *NotifyStore) Set(mac string, cfg NotifyConfig) error {
 	cfg.NtfyResTopic = strings.TrimSpace(cfg.NtfyResTopic)
 	if cfg.WebhookURL != "" {
 		if _, err := url.ParseRequestURI(cfg.WebhookURL); err != nil {
-			return fmt.Errorf("web: webhook_url invalid: %w", err)
+			return fmt.Errorf("notify: webhook_url invalid: %w", err)
 		}
 	}
 	if cfg.NtfyServer != "" {
 		if _, err := url.ParseRequestURI(cfg.NtfyServer); err != nil {
-			return fmt.Errorf("web: ntfy_server invalid: %w", err)
+			return fmt.Errorf("notify: ntfy_server invalid: %w", err)
 		}
 	}
 	s.mu.Lock()
@@ -213,10 +215,10 @@ func (s *NotifyStore) Set(mac string, cfg NotifyConfig) error {
 //
 // Returns nil even when no row existed for the MAC, so the dashboard
 // "remove" button is idempotent from the caller's perspective.
-func (s *NotifyStore) Delete(mac string) error {
-	macKey := normalizeMAC(mac)
+func (s *Store) Delete(mac string) error {
+	macKey := util.NormalizeMAC(mac)
 	if macKey == "" {
-		return errors.New("web: notify mac required")
+		return errors.New("notify: notify mac required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -235,7 +237,7 @@ func (s *NotifyStore) Delete(mac string) error {
 // are returned keyed by the alias itself.
 //
 // Used by the dispatcher on startup to walk subscriptions.
-func (s *NotifyStore) AllByMAC(resolver func(alias string) (mac string, ok bool)) map[string]NotifyConfig {
+func (s *Store) AllByMAC(resolver func(alias string) (mac string, ok bool)) map[string]NotifyConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]NotifyConfig, len(s.data))
@@ -256,7 +258,7 @@ func (s *NotifyStore) AllByMAC(resolver func(alias string) (mac string, ok bool)
 }
 
 // Raw returns the exact on-disk map (alias or MAC keys) for GET handlers.
-func (s *NotifyStore) Raw() map[string]NotifyConfig {
+func (s *Store) Raw() map[string]NotifyConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]NotifyConfig, len(s.data))
@@ -266,7 +268,7 @@ func (s *NotifyStore) Raw() map[string]NotifyConfig {
 	return out
 }
 
-func (s *NotifyStore) persistLocked() error {
+func (s *Store) persistLocked() error {
 	if s.path == "" {
 		return nil
 	}
@@ -303,7 +305,7 @@ type InboxMessage struct {
 // Notifier dispatches device events to webhooks/ntfy and keeps a
 // small per-MAC inbox of messages received on ntfy response topics.
 type Notifier struct {
-	store *NotifyStore
+	store *Store
 	log   *log.Logger
 	http  *http.Client
 
@@ -323,7 +325,7 @@ const inboxMaxPerMAC = 100
 
 // NewNotifier wires a notifier over the given store. Pass nil logger
 // to use the default.
-func NewNotifier(store *NotifyStore, logger *log.Logger) *Notifier {
+func NewNotifier(store *Store, logger *log.Logger) *Notifier {
 	if logger == nil {
 		logger = log.New(os.Stderr, "notifier: ", log.LstdFlags)
 	}
@@ -363,7 +365,7 @@ func (n *Notifier) Dispatch(mac string, cfg NotifyConfig, payload map[string]any
 	if n == nil {
 		return
 	}
-	macU := strings.ToUpper(normalizeMAC(mac))
+	macU := strings.ToUpper(util.NormalizeMAC(mac))
 	sent := []string{}
 	if cfg.HasWebhook() {
 		sent = append(sent, "webhook")
@@ -600,7 +602,7 @@ func (n *Notifier) Inbox(mac string) []InboxMessage {
 	if n == nil {
 		return nil
 	}
-	mac = strings.ToUpper(normalizeMAC(mac))
+	mac = strings.ToUpper(util.NormalizeMAC(mac))
 	n.inboxMu.Lock()
 	defer n.inboxMu.Unlock()
 	buf := n.inbox[mac]

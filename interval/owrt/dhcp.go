@@ -10,16 +10,14 @@
 // without a manager — the /api/dhcp endpoints will return 503 and
 // the dashboard will hide the static-IP button.
 
-package web
+package owrt
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -59,7 +57,7 @@ type StaticLease struct {
 // host doesn't look like an OpenWrt system (uci missing or
 // /etc/config/dhcp unreadable). The value surfaces via errors.Is so
 // callers can fall back cleanly.
-var ErrDHCPManagerUnavailable = errors.New("web: no DHCP manager available on this host")
+var ErrDHCPManagerUnavailable = errors.New("owrt: no DHCP manager available on this host")
 
 // ErrIPAlreadyReserved is returned by DHCPManager.Set when the target
 // IP is already reserved for a different MAC. This prevents writing
@@ -74,7 +72,7 @@ type ErrIPAlreadyReserved struct {
 }
 
 func (e *ErrIPAlreadyReserved) Error() string {
-	return fmt.Sprintf("web: IP %s is already reserved for MAC %s", e.IP, strings.ToUpper(e.OwnerMAC))
+	return fmt.Sprintf("owrt: IP %s is already reserved for MAC %s", e.IP, strings.ToUpper(e.OwnerMAC))
 }
 
 // uciBinary is overridable for tests; argusd always uses the default.
@@ -181,7 +179,7 @@ var (
 	forbiddenNameChars = "'\"\\`$;|&<>\x00\n\r\t"
 )
 
-func validateMAC(mac string) (string, error) {
+func ValidateMAC(mac string) (string, error) {
 	mac = strings.TrimSpace(mac)
 	if !reMAC.MatchString(mac) {
 		return "", fmt.Errorf("invalid MAC %q (want aa:bb:cc:dd:ee:ff)", mac)
@@ -247,7 +245,7 @@ func (m *UCIDHCPManager) List(ctx context.Context) (map[string]StaticLease, erro
 
 // Set implements DHCPManager.
 func (m *UCIDHCPManager) Set(ctx context.Context, l StaticLease) error {
-	mac, err := validateMAC(l.MAC)
+	mac, err := ValidateMAC(l.MAC)
 	if err != nil {
 		return err
 	}
@@ -367,7 +365,7 @@ func macHashSuffix(mac string) string {
 
 // Delete implements DHCPManager.
 func (m *UCIDHCPManager) Delete(ctx context.Context, mac string) error {
-	normalized, err := validateMAC(mac)
+	normalized, err := ValidateMAC(mac)
 	if err != nil {
 		return err
 	}
@@ -458,7 +456,7 @@ func (m *UCIDHCPManager) PurgeArgusOwned(ctx context.Context) (int, error) {
 	}
 	committed = true
 	// Best-effort reload so the pruned state takes effect immediately.
-	_ = applyDHCPChanges(ctx, "", false)
+	_ = ApplyDHCPChanges(ctx, "", false)
 	return len(seen), nil
 }
 
@@ -563,7 +561,7 @@ func parseUCIDHCPShow(out string) map[string]StaticLease {
 	return result
 }
 
-// applyDHCPChanges makes a static-reservation change take effect
+// ApplyDHCPChanges makes a static-reservation change take effect
 // immediately (rather than waiting for the client to voluntarily
 // renew, which is up to 12 h with the default leasetime).
 //
@@ -587,8 +585,8 @@ func parseUCIDHCPShow(out string) map[string]StaticLease {
 // every WiFi client off for a few seconds — the nuclear option when
 // per-station kick doesn't work on vendor firmware that ignores
 // ahsapd.roaming staDisconnect (e.g. MTK C-Life).
-func applyDHCPChanges(ctx context.Context, mac string, restartWiFi bool) applyReport {
-	var rep applyReport
+func ApplyDHCPChanges(ctx context.Context, mac string, restartWiFi bool) ApplyReport {
+	var rep ApplyReport
 
 	// 1. Reload DHCP daemon(s).
 	for _, argv := range dhcpReloadCmds {
@@ -712,10 +710,10 @@ func flushARPForMAC(ctx context.Context, mac string) string {
 	return flushedIP
 }
 
-// applyReport summarizes what applyDHCPChanges did, for inclusion in
+// ApplyReport summarizes what ApplyDHCPChanges did, for inclusion in
 // the /api/dhcp POST/DELETE response body. Consumers use this to
 // render an accurate "已生效" vs "已保存,但需要设备续租后生效" hint.
-type applyReport struct {
+type ApplyReport struct {
 	Reloaded      []string `json:"reloaded,omitempty"`       // init scripts that reloaded successfully
 	Pruned        []string `json:"pruned,omitempty"`         // lease files pruned
 	ARPFlushed    string   `json:"arp_flushed,omitempty"`    // old IP whose ARP entry we deleted
@@ -764,158 +762,3 @@ func pruneLeaseFile(path, mac string) error {
 
 // --- HTTP handlers (wired from Server.handleDHCP) ----------------------
 
-func (s *Server) handleDHCP(w http.ResponseWriter, r *http.Request) {
-	if s.dhcp == nil {
-		http.Error(w, `{"error":"dhcp manager not configured"}`, http.StatusServiceUnavailable)
-		return
-	}
-	// Recovery path: POST with ?purge_argus=1 wipes every argus_-owned
-	// reservation without touching LuCI's anonymous entries. Exists for
-	// the case where a bad argus-written entry broke DHCP and the user
-	// needs to recover without editing /etc/config/dhcp by hand.
-	if r.Method == http.MethodPost && r.URL.Query().Get("purge_argus") == "1" {
-		if !s.writeAuth(r) {
-			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
-			return
-		}
-		s.handleDHCPPurgeArgus(w, r)
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		s.handleDHCPGet(w, r)
-	case http.MethodPost:
-		if !s.writeAuth(r) {
-			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
-			return
-		}
-		s.handleDHCPSet(w, r)
-	case http.MethodDelete:
-		if !s.writeAuth(r) {
-			writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
-			return
-		}
-		s.handleDHCPDelete(w, r)
-	default:
-		w.Header().Set("Allow", "GET, POST, DELETE")
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
-
-// handleDHCPPurgeArgus bulk-removes every argus_-owned reservation.
-// Requires a *UCIDHCPManager; returns 501 for any other DHCPManager
-// implementation (the interface doesn't carry this method).
-func (s *Server) handleDHCPPurgeArgus(w http.ResponseWriter, r *http.Request) {
-	ucm, ok := s.dhcp.(*UCIDHCPManager)
-	if !ok {
-		writeJSONErr(w, http.StatusNotImplemented,
-			"purge_argus only supported for UCIDHCPManager")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	n, err := ucm.PurgeArgusOwned(ctx)
-	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":      true,
-		"removed": n,
-	})
-}
-
-func (s *Server) handleDHCPGet(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	leases, err := s.dhcp.List(ctx)
-	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// Strip the internal "#<idx>:" prefix before sending to clients.
-	clean := make(map[string]StaticLease, len(leases))
-	for mac, l := range leases {
-		l.MAC = strings.ToUpper(mac)
-		if i := strings.Index(l.Name, ":"); i >= 0 && strings.HasPrefix(l.Name, "#") {
-			l.Name = l.Name[i+1:]
-		}
-		clean[strings.ToUpper(mac)] = l
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(map[string]any{"leases": clean})
-}
-
-func (s *Server) handleDHCPSet(w http.ResponseWriter, r *http.Request) {
-	var in StaticLease
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	if err := s.dhcp.Set(ctx, in); err != nil {
-		var conflict *ErrIPAlreadyReserved
-		if errors.As(err, &conflict) {
-			// 409 Conflict: the IP is already owned by a different MAC.
-			// Surface the existing owner so the UI can say whose IP it is.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":     err.Error(),
-				"ip":        conflict.IP,
-				"owner_mac": strings.ToUpper(conflict.OwnerMAC),
-			})
-			return
-		}
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// Immediate-effect: reload daemons, prune stale lease, kick station.
-	// Only run against the UCIDHCPManager (real implementation); test
-	// stubs don't want side effects on the host.
-	// restart_wifi=1 enables the nuclear option (full WiFi restart);
-	// the user opts in per-request because it briefly disconnects every
-	// WiFi client on the AP.
-	restartWiFi := r.URL.Query().Get("restart_wifi") == "1"
-	var report applyReport
-	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
-		normMAC, _ := validateMAC(in.MAC)
-		report = applyDHCPChanges(ctx, normMAC, restartWiFi)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":    true,
-		"mac":   strings.ToUpper(in.MAC),
-		"ip":    in.IP,
-		"apply": report,
-	})
-}
-
-func (s *Server) handleDHCPDelete(w http.ResponseWriter, r *http.Request) {
-	mac := r.URL.Query().Get("mac")
-	if mac == "" {
-		writeJSONErr(w, http.StatusBadRequest, "mac query parameter required")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	if err := s.dhcp.Delete(ctx, mac); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	var report applyReport
-	if _, ok := s.dhcp.(*UCIDHCPManager); ok {
-		normMAC, _ := validateMAC(mac)
-		report = applyDHCPChanges(ctx, normMAC, r.URL.Query().Get("restart_wifi") == "1")
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":    true,
-		"apply": report,
-	})
-}

@@ -25,12 +25,10 @@
 // Ethernet, and shutting down a switch port for a single MAC isn't
 // something we want to do casually from the dashboard.
 
-package web
+package owrt
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,12 +37,12 @@ import (
 	"time"
 )
 
-// kickStation runs the per-station deauth chain (ahsapd hint + iwpriv
+// KickStation runs the per-station deauth chain (ahsapd hint + iwpriv
 // fan-out) and, when restartWiFi is true, the nuclear wifi-restart
 // chain too. Returns a small report describing what fired so the UI
 // can echo it back.
-func kickStation(ctx context.Context, mac string, restartWiFi bool) kickReport {
-	var rep kickReport
+func KickStation(ctx context.Context, mac string, restartWiFi bool) KickReport {
+	var rep KickReport
 
 	// 1. Vendor band-steering hint (no-op on most firmwares but cheap to try).
 	for _, tmpl := range staKickCmds {
@@ -142,7 +140,7 @@ func listMTKWiFiVAPs() []string {
 	return ifaces
 }
 
-type kickReport struct {
+type KickReport struct {
 	// Kicked is whichever staKickCmds entry succeeded (vendor hint).
 	// Often present even when the station didn't actually drop —
 	// IwprivKicked is the more authoritative "really deauth'd" signal.
@@ -161,55 +159,3 @@ type kickReport struct {
 //	  Empty `kicked` + `iwpriv_kicked` means no command was available
 //	  on this host — surfaced to the user as "踢下线指令已尝试, 但未
 //	  找到可用方法".
-func (s *Server) handleDeviceKick(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if !s.writeAuth(r) {
-		writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
-		return
-	}
-	var in struct {
-		MAC         string `json:"mac"`
-		RestartWiFi bool   `json:"restart_wifi"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid json body")
-		return
-	}
-	mac, err := validateMAC(in.MAC)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	// Look up wired-vs-wireless. The watcher's Known() is the
-	// authoritative source for currently-online devices; the offline
-	// cache fills in for "just dropped". A wired device should never
-	// be deauth'd via hostapd.
-	macLower := strings.ToLower(mac)
-	for k, d := range s.watcher.Known() {
-		if strings.ToLower(k) == macLower {
-			if d.Wired() {
-				writeJSONErr(w, http.StatusBadRequest, "wired device cannot be kicked offline")
-				return
-			}
-			break
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	rep := kickStation(ctx, mac, in.RestartWiFi)
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":             true,
-		"mac":            strings.ToUpper(mac),
-		"kicked":         rep.Kicked,
-		"iwpriv_kicked":  rep.IwprivKicked,
-		"wifi_restarted": rep.WiFiRestarted,
-	})
-}

@@ -13,6 +13,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // handleHistory serves GET /api/history?mac=XX&from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -44,7 +47,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		from = time.Now().Add(-HistoryRetention)
+		from = time.Now().Add(-history.Retention)
 	}
 	if toStr != "" {
 		var err error
@@ -65,7 +68,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(map[string]any{
-		"mac":     strings.ToUpper(normalizeMAC(mac)),
+		"mac":     strings.ToUpper(util.NormalizeMAC(mac)),
 		"entries": entries,
 		"count":   len(entries),
 	})
@@ -119,13 +122,13 @@ func (s *Server) handleWorktime(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var override Override
+	var override override.Override
 	if s.overrides != nil {
 		if o, ok := s.overrides.Lookup(mac, date.Format("2006-01-02")); ok {
 			override = o
 		}
 	}
-	rep := ComputeWorktime(mac, date, startHHMM, endHHMM, entries, time.Now(), override, s.dayKindFor(date))
+	rep := history.ComputeWorktime(mac, date, startHHMM, endHHMM, entries, time.Now(), override, s.dayKindFor(date))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	enc := json.NewEncoder(w)
@@ -182,12 +185,12 @@ func (s *Server) handleWorktimeMonth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rep := MonthlyReport{
-		MAC:       strings.ToUpper(normalizeMAC(mac)),
+	rep := history.MonthlyReport{
+		MAC:       strings.ToUpper(util.NormalizeMAC(mac)),
 		Month:     monthStart.Format("2006-01"),
 		StartHHMM: startHHMM,
 		EndHHMM:   endHHMM,
-		Days:      []DayWorktime{},
+		Days:      []history.DayWorktime{},
 	}
 	now := time.Now()
 	// Cap iteration at "today" so future days of the current month
@@ -197,17 +200,17 @@ func (s *Server) handleWorktimeMonth(w http.ResponseWriter, r *http.Request) {
 		lastDay = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Add(24 * time.Hour)
 	}
 	for day := monthStart; day.Before(lastDay); day = day.AddDate(0, 0, 1) {
-		var override Override
+		var override override.Override
 		if s.overrides != nil {
 			if o, ok := s.overrides.Lookup(mac, day.Format("2006-01-02")); ok {
 				override = o
 			}
 		}
-		dr := ComputeWorktime(mac, day, startHHMM, endHHMM, entries, now, override, s.dayKindFor(day))
+		dr := history.ComputeWorktime(mac, day, startHHMM, endHHMM, entries, now, override, s.dayKindFor(day))
 		if dr.PresentSecs <= 0 && !dr.Manual {
 			continue // skip days the device never showed up (and wasn't manually filled)
 		}
-		rep.Days = append(rep.Days, DayWorktime{
+		rep.Days = append(rep.Days, history.DayWorktime{
 			Date:            dr.Date,
 			PresentSecs:     dr.PresentSecs,
 			OvertimeSecs:    dr.OvertimeSecs,
@@ -217,7 +220,7 @@ func (s *Server) handleWorktimeMonth(w http.ResponseWriter, r *http.Request) {
 			LastSeenMs:      dr.LastSeenMs,
 			ArrivalStatus:   dr.ArrivalStatus,
 			DepartureStatus: dr.DepartureStatus,
-			DayKind:         dr.DayKind,
+			DayKind: dr.DayKind,
 			OTDay:           dr.OTDay,
 			Manual:          dr.Manual,
 			MissingOut:      dr.MissingOut,
@@ -281,7 +284,7 @@ func (s *Server) handleWorktimeOverride(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mac":      strings.ToUpper(normalizeMAC(mac)),
+			"mac":      strings.ToUpper(util.NormalizeMAC(mac)),
 			"date":     date,
 			"exists":   ok,
 			"override": o,
@@ -301,7 +304,7 @@ func (s *Server) handleWorktimeOverride(w http.ResponseWriter, r *http.Request) 
 			writeJSONErr(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
-		if err := s.overrides.Set(in.MAC, in.Date, Override{In: in.In, Out: in.Out}); err != nil {
+		if err := s.overrides.Set(in.MAC, in.Date, override.Override{In: in.In, Out: in.Out}); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/store/settings"
+	"github.com/xxl6097/argus-app/interval/store/override"
 )
 
 // recordPunchCheckout has these branches:
@@ -24,15 +26,15 @@ func newCheckoutServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	overridesPath := filepath.Join(dir, "overrides.json")
-	settings := NewSettingsStore("")
-	if err := settings.Update(Settings{WorkStart: "09:00", WorkEnd: "18:30"}); err != nil {
+	sett := settings.New("")
+	if err := sett.Update(settings.Settings{WorkStart: "09:00", WorkEnd: "18:30"}); err != nil {
 		t.Fatalf("settings update: %v", err)
 	}
-	if err := settings.AddPunch(checkoutMac); err != nil {
+	if err := sett.AddPunch(checkoutMac); err != nil {
 		t.Fatalf("AddPunch: %v", err)
 	}
-	overrides := NewOverrideStore(overridesPath, nil)
-	return &Server{settings: settings, overrides: overrides}, overridesPath
+	overrides := override.New(overridesPath, nil)
+	return &Server{settings: sett, overrides: overrides}, overridesPath
 }
 
 func mkOfflineCheckout(when time.Time, mac string) argus.Event {
@@ -73,10 +75,10 @@ func TestRecordPunchCheckout_NonPunchIsNoop(t *testing.T) {
 
 // 3. nil overrides → silent no-op (must not panic).
 func TestRecordPunchCheckout_NoOverridesStore(t *testing.T) {
-	settings := NewSettingsStore("")
-	settings.Update(Settings{WorkStart: "09:00", WorkEnd: "18:30"})
-	settings.AddPunch(checkoutMac)
-	s := &Server{settings: settings} // overrides == nil
+	sett := settings.New("")
+	sett.Update(settings.Settings{WorkStart: "09:00", WorkEnd: "18:30"})
+	sett.AddPunch(checkoutMac)
+	s := &Server{settings: sett} // overrides == nil
 	when := time.Date(2026, 5, 19, 19, 0, 0, 0, time.Local)
 	s.recordPunchCheckout(mkOfflineCheckout(when, checkoutMac))
 	// Test passes if no panic.
@@ -110,7 +112,7 @@ func TestRecordPunchCheckout_AtWorkEnd(t *testing.T) {
 func TestRecordPunchCheckout_PreservesIn(t *testing.T) {
 	s, _ := newCheckoutServer(t)
 	// User filed an arrival manually earlier today.
-	if err := s.overrides.Set(checkoutMac, "2026-05-19", Override{In: "08:45", Out: ""}); err != nil {
+	if err := s.overrides.Set(checkoutMac, "2026-05-19", override.Override{In: "08:45", Out: ""}); err != nil {
 		t.Fatalf("seed In: %v", err)
 	}
 	when := time.Date(2026, 5, 19, 19, 15, 0, 0, time.Local)

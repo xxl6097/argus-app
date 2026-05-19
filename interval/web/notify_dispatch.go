@@ -26,6 +26,10 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // chineseWeekdays maps Go's time.Weekday to Chinese day names.
@@ -90,7 +94,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	if e.Kind != argus.EventOnline && e.Kind != argus.EventOffline {
 		return
 	}
-	mac := normalizeMAC(e.Device.MAC)
+	mac := util.NormalizeMAC(e.Device.MAC)
 	macU := strings.ToUpper(mac)
 	alias := ""
 	if s.aliases != nil {
@@ -105,7 +109,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	}
 	isPunch := s.settings != nil && s.settings.IsPunch(mac)
 
-	when := nonZeroTime(e.Time)
+	when := util.NonZeroTime(e.Time)
 	// Reuse the same attribution that the history store uses, so the
 	// webhook body matches the timeline pill exactly. sourceFor() peeks
 	// at the syslog hint cache; we have to call it BEFORE OnEvent's
@@ -141,7 +145,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	// phones associating then leaving, etc.). The per-device entry
 	// IS the user's "I care about this device" signal.
 	hasNotifyConfig := false
-	var deviceCfg NotifyConfig
+	var deviceCfg notify.NotifyConfig
 	if s.notifyStore != nil {
 		if cfg, ok := s.notifyStore.Lookup(e.Device.MAC); ok {
 			hasNotifyConfig = true
@@ -165,7 +169,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 			}
 			gp["scope"] = "global"
 			appendWebhookKeyword(gp, keyword)
-			s.notifier.Dispatch(mac, NotifyConfig{WebhookURL: gURL}, gp, e.Kind.String())
+			s.notifier.Dispatch(mac, notify.NotifyConfig{WebhookURL: gURL}, gp, e.Kind.String())
 		}
 	}
 
@@ -257,13 +261,13 @@ func (s *Server) recordPunchCheckout(e argus.Event) {
 	if s.overrides == nil || s.settings == nil {
 		return
 	}
-	mac := normalizeMAC(e.Device.MAC)
+	mac := util.NormalizeMAC(e.Device.MAC)
 	if mac == "" || !s.settings.IsPunch(mac) {
 		return
 	}
-	when := nonZeroTime(e.Time).In(time.Local)
+	when := util.NonZeroTime(e.Time).In(time.Local)
 	cfg := s.settings.Get()
-	endSec, ok := parseClock(cfg.WorkEnd)
+	endSec, ok := util.ParseClock(cfg.WorkEnd)
 	if !ok {
 		return
 	}
@@ -293,7 +297,7 @@ func (s *Server) classifyPunchEvent(e argus.Event, isPunch bool, when time.Time)
 	if !isPunch || s.history == nil || s.settings == nil {
 		return punchEventNotPunch
 	}
-	mac := normalizeMAC(e.Device.MAC)
+	mac := util.NormalizeMAC(e.Device.MAC)
 	whenLocal := when.In(time.Local)
 	dayStart := time.Date(whenLocal.Year(), whenLocal.Month(), whenLocal.Day(), 0, 0, 0, 0, time.Local)
 	// Slight forward padding: history.Record for THIS event has already
@@ -316,7 +320,7 @@ func (s *Server) classifyPunchEvent(e argus.Event, isPunch bool, when time.Time)
 		return punchEventCheckIn
 	case argus.EventOffline:
 		cfg := s.settings.Get()
-		endSec, ok := parseClock(cfg.WorkEnd)
+		endSec, ok := util.ParseClock(cfg.WorkEnd)
 		if !ok {
 			return punchEventCheckOut // unparseable WorkEnd → never suppress
 		}
@@ -377,13 +381,13 @@ func (s *Server) formatNotifyMarkdown(e argus.Event, when time.Time, displayName
 			from := day.Add(-24 * time.Hour)
 			to := day.Add(48 * time.Hour)
 			entries, _ := s.history.Query(mac, from, to)
-			var override Override
+			var override override.Override
 			if s.overrides != nil {
 				if o, ok := s.overrides.Lookup(mac, dateStr); ok {
 					override = o
 				}
 			}
-			rep := ComputeWorktime(mac, day, cfg.WorkStart, cfg.WorkEnd, entries, when, override, s.dayKindFor(day))
+			rep := history.ComputeWorktime(mac, day, cfg.WorkStart, cfg.WorkEnd, entries, when, override, s.dayKindFor(day))
 			// On ONLINE we expect FirstSeen to equal `when` (or be very
 			// close); on OFFLINE we want LastSeen.
 			if e.Kind == argus.EventOnline && rep.FirstSeenMs > 0 {
@@ -453,13 +457,13 @@ func (s *Server) monthOvertimeSecs(mac string, day, now time.Time) (int64, bool)
 	}
 	var total int64
 	for d := monthStart; d.Before(cap); d = d.AddDate(0, 0, 1) {
-		var override Override
+		var override override.Override
 		if s.overrides != nil {
 			if o, ok := s.overrides.Lookup(mac, d.Format("2006-01-02")); ok {
 				override = o
 			}
 		}
-		rep := ComputeWorktime(mac, d, cfg.WorkStart, cfg.WorkEnd, entries, now, override, s.dayKindFor(d))
+		rep := history.ComputeWorktime(mac, d, cfg.WorkStart, cfg.WorkEnd, entries, now, override, s.dayKindFor(d))
 		total += rep.OvertimeSecs
 	}
 	return total, true

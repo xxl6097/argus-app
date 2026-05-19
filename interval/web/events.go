@@ -27,6 +27,7 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // syslogHint is one direction-tagged syslog observation (connect side
@@ -108,7 +109,7 @@ func (s *Server) OnEvent(e argus.Event) {
 //
 //	owrt.WatchSyslog(ctx, srv.OnSyslog, onError)
 func (s *Server) OnSyslog(e argus.SyslogEvent) {
-	mac := normalizeMAC(e.MAC)
+	mac := util.NormalizeMAC(e.MAC)
 	if mac == "" {
 		return
 	}
@@ -118,10 +119,10 @@ func (s *Server) OnSyslog(e argus.SyslogEvent) {
 	switch {
 	case e.Kind.IsConnect():
 		h.connectKind = e.Kind.String()
-		h.connectAt = nonZeroTime(e.Time)
+		h.connectAt = util.NonZeroTime(e.Time)
 	case e.Kind.IsDisconnect():
 		h.disconnectKind = e.Kind.String()
-		h.disconnectAt = nonZeroTime(e.Time)
+		h.disconnectAt = util.NonZeroTime(e.Time)
 	default:
 		return
 	}
@@ -132,8 +133,8 @@ func (s *Server) OnSyslog(e argus.SyslogEvent) {
 // Returns "syslog:<KIND>" when a fresh same-direction hint exists,
 // otherwise "fetcher:<kind>" using the watcher's selected fetcher.
 func (s *Server) sourceFor(e argus.Event) string {
-	mac := normalizeMAC(e.Device.MAC)
-	now := nonZeroTime(e.Time)
+	mac := util.NormalizeMAC(e.Device.MAC)
+	now := util.NonZeroTime(e.Time)
 	s.syslogMu.Lock()
 	h, ok := s.syslogHints[mac]
 	s.syslogMu.Unlock()
@@ -174,22 +175,22 @@ func (s *Server) updateOfflineCache(e argus.Event) {
 			}
 			delete(s.offline, oldestMAC)
 		}
-		s.offline[normalizeMAC(e.Device.MAC)] = offlineEntry{
+		s.offline[util.NormalizeMAC(e.Device.MAC)] = offlineEntry{
 			dev:       e.Device,
-			offlineAt: nonZeroTime(e.Time),
+			offlineAt: util.NonZeroTime(e.Time),
 		}
 
 	case argus.EventOnline:
 		s.offlineMu.Lock()
 		defer s.offlineMu.Unlock()
-		delete(s.offline, normalizeMAC(e.Device.MAC))
+		delete(s.offline, util.NormalizeMAC(e.Device.MAC))
 
 	case argus.EventChange:
 		// Only relevant if the MAC is currently in our offline cache —
 		// an offline device that happened to get an enrichment update.
 		s.offlineMu.Lock()
 		defer s.offlineMu.Unlock()
-		mac := normalizeMAC(e.Device.MAC)
+		mac := util.NormalizeMAC(e.Device.MAC)
 		if existing, ok := s.offline[mac]; ok {
 			existing.dev = e.Device
 			s.offline[mac] = existing

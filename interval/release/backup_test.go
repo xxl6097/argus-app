@@ -1,4 +1,4 @@
-package web
+package release
 
 import (
 	"archive/tar"
@@ -30,7 +30,7 @@ func TestBackupRoundTrip(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "aliases.json.bak"), `garbage`, 0o644)
 
 	var buf bytes.Buffer
-	n, err := packDataDir(src, "v9.9.9", &buf)
+	n, err := PackDataDir(src, "v9.9.9", &buf)
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestBackupRoundTrip(t *testing.T) {
 
 	// Import into a fresh dir.
 	dst := t.TempDir() + "/data"
-	res, err := importBackup(dst, &buf, true)
+	res, err := ImportBackup(dst, &buf, true)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestBackupSkipCredentials(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "notifications.json"), `{"topic":"from-backup"}`, 0o600)
 
 	var buf bytes.Buffer
-	if _, err := packDataDir(src, "test", &buf); err != nil {
+	if _, err := PackDataDir(src, "test", &buf); err != nil {
 		t.Fatalf("pack: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestBackupSkipCredentials(t *testing.T) {
 	mustWrite(t, filepath.Join(live, "notifications.json"), `{"topic":"from-live"}`, 0o600)
 	mustWrite(t, filepath.Join(live, "aliases.json"), `{"x":"old"}`, 0o644)
 
-	res, err := importBackup(live, &buf, false)
+	res, err := ImportBackup(live, &buf, false)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestBackupRejectZipSlip(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			tar := buildEvilTar(t, c.entry)
-			_, err := importBackup(dst, bytes.NewReader(tar), true)
+			_, err := ImportBackup(dst, bytes.NewReader(tar), true)
 			if err == nil {
 				t.Fatalf("expected error rejecting %q, got nil", c.entry)
 			}
@@ -165,7 +165,7 @@ func TestBackupRejectMissingManifest(t *testing.T) {
 	gw.Close()
 
 	dst := t.TempDir() + "/data"
-	_, err := importBackup(dst, bytes.NewReader(buf.Bytes()), true)
+	_, err := ImportBackup(dst, bytes.NewReader(buf.Bytes()), true)
 	if err == nil {
 		t.Fatalf("expected error for missing manifest.json")
 	}
@@ -192,7 +192,7 @@ func TestBackupRejectWrongFormat(t *testing.T) {
 	gw.Close()
 
 	dst := t.TempDir() + "/data"
-	_, err := importBackup(dst, bytes.NewReader(buf.Bytes()), true)
+	_, err := ImportBackup(dst, bytes.NewReader(buf.Bytes()), true)
 	if err == nil {
 		t.Fatalf("expected error for wrong format")
 	}

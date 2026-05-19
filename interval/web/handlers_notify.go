@@ -12,6 +12,8 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // handleNotifications multiplexes GET / POST / DELETE on
@@ -41,7 +43,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"mac":    strings.ToUpper(normalizeMAC(mac)),
+			"mac":    strings.ToUpper(util.NormalizeMAC(mac)),
 			"exists": ok,
 			"config": cfg,
 		})
@@ -52,7 +54,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		}
 		var in struct {
 			MAC string `json:"mac"`
-			NotifyConfig
+			notify.NotifyConfig
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in); err != nil {
 			writeJSONErr(w, http.StatusBadRequest, "invalid json body")
@@ -131,9 +133,9 @@ func (s *Server) handleNotificationTest(w http.ResponseWriter, r *http.Request) 
 	}
 	// Pull whatever device snapshot the watcher has; falls back to a
 	// minimal stub if the device isn't currently known.
-	dev := argus.Device{MAC: strings.ToUpper(normalizeMAC(in.MAC))}
+	dev := argus.Device{MAC: strings.ToUpper(util.NormalizeMAC(in.MAC))}
 	for mac, d := range s.watcher.Known() {
-		if normalizeMAC(mac) == normalizeMAC(in.MAC) {
+		if util.NormalizeMAC(mac) == util.NormalizeMAC(in.MAC) {
 			dev = d
 			break
 		}
@@ -169,7 +171,7 @@ func (s *Server) handleNotificationMessages(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"mac":      strings.ToUpper(normalizeMAC(mac)),
+		"mac":      strings.ToUpper(util.NormalizeMAC(mac)),
 		"messages": s.notifier.Inbox(mac),
 	})
 }

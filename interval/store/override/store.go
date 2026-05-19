@@ -1,4 +1,4 @@
-package web
+package override
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"github.com/xxl6097/argus-app/interval/util"
+	"github.com/xxl6097/argus-app/interval/store/alias"
 )
 
 // Override is a manual in/out record for (mac, date). Used when the
@@ -22,7 +24,7 @@ type Override struct {
 	Out string `json:"out,omitempty"`
 }
 
-// OverrideStore persists per-device-per-date manual in/out overrides.
+// Store persists per-device-per-date manual in/out overrides.
 // Wire API is always keyed by MAC, but on-disk the top-level key is
 // the device's ALIAS (when one is set) so the file is human-readable.
 // Unaliased devices fall back to the MAC so the store still works
@@ -36,23 +38,23 @@ type Override struct {
 // name — future writes re-home it.
 //
 // Single-file JSON with atomic rename, mirroring AliasStore's pattern.
-type OverrideStore struct {
+type Store struct {
 	path    string
-	aliases *AliasStore // optional; nil means "always key by MAC"
+	aliases *alias.Store // optional; nil means "always key by MAC"
 
 	mu   sync.RWMutex
 	data map[string]map[string]Override // key(alias|MAC) -> "YYYY-MM-DD" -> Override
 }
 
-// NewOverrideStore constructs a store backed by path. aliases is
+// New constructs a store backed by path. aliases is
 // optional: when attached, top-level JSON keys use the alias (if one
 // is set for that MAC) instead of the MAC itself. Pass nil to always
 // key by MAC.
 //
 // Empty path = in-memory only (tests). Missing / corrupt file =
 // empty defaults.
-func NewOverrideStore(path string, aliases *AliasStore) *OverrideStore {
-	s := &OverrideStore{
+func New(path string, aliases *alias.Store) *Store {
+	s := &Store{
 		path:    path,
 		aliases: aliases,
 		data:    make(map[string]map[string]Override),
@@ -63,14 +65,14 @@ func NewOverrideStore(path string, aliases *AliasStore) *OverrideStore {
 
 // Reload re-reads the overrides file from disk. Used after backup
 // import overwrites the JSON file.
-func (s *OverrideStore) Reload() {
+func (s *Store) Reload() {
 	s.mu.Lock()
 	s.data = make(map[string]map[string]Override)
 	s.mu.Unlock()
 	s.load()
 }
 
-func (s *OverrideStore) load() {
+func (s *Store) load() {
 	if s.path == "" {
 		return
 	}
@@ -151,8 +153,8 @@ func isMonthKey(s string) bool {
 // keyFor resolves a MAC to its storage key: alias when one exists
 // and aliases is attached, otherwise normalized MAC. Empty MAC yields
 // empty string — callers should guard.
-func (s *OverrideStore) keyFor(mac string) string {
-	mac = normalizeMAC(mac)
+func (s *Store) keyFor(mac string) string {
+	mac = util.NormalizeMAC(mac)
 	if mac == "" {
 		return ""
 	}
@@ -167,7 +169,7 @@ func (s *OverrideStore) keyFor(mac string) string {
 // Lookup returns the override for (mac, date) and whether one exists.
 // Tries the alias key first, then falls back to the raw MAC so entries
 // written before an alias was assigned still resolve.
-func (s *OverrideStore) Lookup(mac, date string) (Override, bool) {
+func (s *Store) Lookup(mac, date string) (Override, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if key := s.keyFor(mac); key != "" {
@@ -179,7 +181,7 @@ func (s *OverrideStore) Lookup(mac, date string) (Override, bool) {
 	}
 	// Legacy fallback: raw MAC key (covers pre-alias overrides and
 	// files written by older versions of this binary).
-	macKey := normalizeMAC(mac)
+	macKey := util.NormalizeMAC(mac)
 	if macKey == "" {
 		return Override{}, false
 	}
@@ -205,14 +207,14 @@ func (s *OverrideStore) Lookup(mac, date string) (Override, bool) {
 // legacy MAC-keyed row exists for this device, it's migrated to the
 // alias key and the MAC entry is removed — so the on-disk file
 // converges on alias keys over time.
-func (s *OverrideStore) Set(mac, date string, o Override) error {
-	macKey := normalizeMAC(mac)
+func (s *Store) Set(mac, date string, o Override) error {
+	macKey := util.NormalizeMAC(mac)
 	if macKey == "" {
-		return errors.New("web: override mac required")
+		return errors.New("override: override mac required")
 	}
 	date = strings.TrimSpace(date)
 	if date == "" {
-		return errors.New("web: override date required (YYYY-MM-DD)")
+		return errors.New("override: override date required (YYYY-MM-DD)")
 	}
 	o.In = strings.TrimSpace(o.In)
 	o.Out = strings.TrimSpace(o.Out)
@@ -221,21 +223,21 @@ func (s *OverrideStore) Set(mac, date string, o Override) error {
 	}
 	var inSec, outSec int
 	if o.In != "" {
-		secs, ok := parseClock(o.In)
+		secs, ok := util.ParseClock(o.In)
 		if !ok {
-			return errors.New("web: in must be HH:MM or HH:MM:SS")
+			return errors.New("override: in must be HH:MM or HH:MM:SS")
 		}
 		inSec = secs
 	}
 	if o.Out != "" {
-		secs, ok := parseClock(o.Out)
+		secs, ok := util.ParseClock(o.Out)
 		if !ok {
-			return errors.New("web: out must be HH:MM or HH:MM:SS")
+			return errors.New("override: out must be HH:MM or HH:MM:SS")
 		}
 		outSec = secs
 	}
 	if o.In != "" && o.Out != "" && outSec <= inSec {
-		return errors.New("web: out must be after in")
+		return errors.New("override: out must be after in")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -260,11 +262,11 @@ func (s *OverrideStore) Set(mac, date string, o Override) error {
 
 // Delete removes the override for (mac, date). Tries both alias and
 // MAC keys to cover legacy rows.
-func (s *OverrideStore) Delete(mac, date string) error {
-	return s.clear(normalizeMAC(mac), strings.TrimSpace(date))
+func (s *Store) Delete(mac, date string) error {
+	return s.clear(util.NormalizeMAC(mac), strings.TrimSpace(date))
 }
 
-func (s *OverrideStore) clear(macKey, date string) error {
+func (s *Store) clear(macKey, date string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	candidates := []string{macKey, strings.ToUpper(macKey)}
@@ -296,7 +298,7 @@ func (s *OverrideStore) clear(macKey, date string) error {
 // either case) under the alias key and deletes the MAC rows. Caller
 // must hold s.mu. Entries already present under the alias key take
 // precedence — we do not overwrite user-intent with stale rows.
-func (s *OverrideStore) migrateLegacyLocked(macKey, aliasKey string) {
+func (s *Store) migrateLegacyLocked(macKey, aliasKey string) {
 	for _, legacy := range []string{macKey, strings.ToUpper(macKey)} {
 		if legacy == aliasKey {
 			continue
@@ -320,7 +322,7 @@ func (s *OverrideStore) migrateLegacyLocked(macKey, aliasKey string) {
 	}
 }
 
-func (s *OverrideStore) persistLocked() error {
+func (s *Store) persistLocked() error {
 	if s.path == "" {
 		return nil
 	}

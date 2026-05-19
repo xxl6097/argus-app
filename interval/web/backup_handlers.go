@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+	"github.com/xxl6097/argus-app/interval/release"
 )
 
 // handleBackupExport streams a gzipped tar of the configured data
@@ -38,7 +39,7 @@ func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Streaming: we don't know the final size up front, so no
 	// Content-Length. Browsers handle this fine for downloads.
-	if _, err := packDataDir(s.dataDir, host, w); err != nil {
+	if _, err := release.PackDataDir(s.dataDir, host, w); err != nil {
 		// Headers are already flushed by the time pack starts writing,
 		// so we can't switch to a JSON error. Best we can do is abort
 		// the connection so the client sees a truncated download.
@@ -77,8 +78,8 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 32 MiB upload cap — well above any realistic argus-app data dir.
-	r.Body = http.MaxBytesReader(w, r.Body, maxImportArchiveBytes+1024)
-	if err := r.ParseMultipartForm(maxImportArchiveBytes); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, release.MaxImportArchiveBytes+1024)
+	if err := r.ParseMultipartForm(release.MaxImportArchiveBytes); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}
@@ -98,7 +99,7 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := importBackup(s.dataDir, file, restoreCreds)
+	res, err := release.ImportBackup(s.dataDir, file, restoreCreds)
 	if err != nil {
 		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return

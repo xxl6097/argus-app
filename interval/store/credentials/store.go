@@ -1,14 +1,14 @@
 // Package web — login / session / credentials wiring.
 //
 // This file is the single owner of the Web UI authentication state:
-//   - CredentialsStore   the on-disk admin user + bcrypt hash
+//   - Store   the on-disk admin user + bcrypt hash
 //   - SessionStore       in-memory cookie → username map (TTL 24h)
-//   - cookieName         the only Set-Cookie this app emits
+//   - CookieName         the only Set-Cookie this app emits
 //
 // The middleware that consumes these (Server.requireAuth) lives in
 // server.go because it touches the http.ServeMux and other Server
 // state; everything else stays here.
-package web
+package credentials
 
 import (
 	"crypto/rand"
@@ -24,14 +24,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// cookieName is the name of the session cookie. Same name across
+// CookieName is the name of the session cookie. Same name across
 // login / logout / requireAuth so we don't drift.
-const cookieName = "argus_session"
+const CookieName = "argus_session"
 
-// sessionTTL caps how long a successful login is valid. Long enough
+// SessionTTL caps how long a successful login is valid. Long enough
 // that a user doesn't re-auth daily; short enough that a stolen
 // cookie has a finite blast radius.
-const sessionTTL = 24 * time.Hour
+const SessionTTL = 24 * time.Hour
 
 // bcryptCost is the password hashing work factor. cost=10 takes ~100ms
 // on a mid-range ARM64 router (MT7981); higher would make logins
@@ -41,7 +41,7 @@ const bcryptCost = 10
 
 // Credentials is the on-disk shape of credentials.json. We do NOT
 // surface PasswordHash on any public method; consumers ask
-// CredentialsStore for the metadata (Username / MustChange) and feed
+// Store for the metadata (Username / MustChange) and feed
 // candidate passwords back in to Verify.
 type Credentials struct {
 	Username     string `json:"username"`
@@ -50,26 +50,26 @@ type Credentials struct {
 	UpdatedAt    int64  `json:"updated_at"`
 }
 
-// CredentialsStore is a single-account credential vault, mirroring
+// Store is a single-account credential vault, mirroring
 // SettingsStore's load-on-init + atomic-write pattern.
 //
 // First-boot semantics: if the file doesn't exist, we seed
 // admin/admin and set MustChange=true so the dashboard can force a
 // password change on first login. The hash is persisted so subsequent
 // boots don't re-seed.
-type CredentialsStore struct {
+type Store struct {
 	path string
 	mu   sync.RWMutex
 	data Credentials
 }
 
-// NewCredentialsStore loads (or creates) credentials.json at path.
+// New loads (or creates) credentials.json at path.
 // Passing path="" disables disk persistence entirely — the vault
 // still works in-memory and seeds the default admin/admin, but no
 // changes survive a restart. Used by tests; production should always
 // pass a real path.
-func NewCredentialsStore(path string) *CredentialsStore {
-	s := &CredentialsStore{path: path}
+func New(path string) *Store {
+	s := &Store{path: path}
 	if !s.load() {
 		s.seedDefault()
 	}
@@ -80,12 +80,12 @@ func NewCredentialsStore(path string) *CredentialsStore {
 // admin record. Used after backup import overwrites the file. If the
 // new file is missing or corrupt, the in-memory state is left as-is
 // (the caller should not have imported a missing credentials.json).
-func (s *CredentialsStore) Reload() bool {
+func (s *Store) Reload() bool {
 	return s.load()
 }
 
 // load returns true if a usable credential record was read off disk.
-func (s *CredentialsStore) load() bool {
+func (s *Store) load() bool {
 	if s.path == "" {
 		return false
 	}
@@ -111,7 +111,7 @@ func (s *CredentialsStore) load() bool {
 
 // seedDefault writes admin/admin with MustChange=true. Logged once at
 // startup by the caller (server.go) so the operator notices.
-func (s *CredentialsStore) seedDefault() {
+func (s *Store) seedDefault() {
 	hash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcryptCost)
 	if err != nil {
 		// Should be impossible (bcrypt only fails on invalid cost), but
@@ -134,7 +134,7 @@ func (s *CredentialsStore) seedDefault() {
 
 // persist writes the current data to disk atomically (tmp + rename),
 // 0600 so non-root users on the router can't read the bcrypt hash.
-func (s *CredentialsStore) persist() error {
+func (s *Store) persist() error {
 	if s.path == "" {
 		return nil
 	}
@@ -155,7 +155,7 @@ func (s *CredentialsStore) persist() error {
 }
 
 // Username returns the configured admin user name.
-func (s *CredentialsStore) Username() string {
+func (s *Store) Username() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.data.Username
@@ -164,7 +164,7 @@ func (s *CredentialsStore) Username() string {
 // MustChange reports whether the current password is the seeded
 // default and the user has yet to rotate it. The login flow uses
 // this to force a password change before issuing a session cookie.
-func (s *CredentialsStore) MustChange() bool {
+func (s *Store) MustChange() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.data.MustChange
@@ -173,7 +173,7 @@ func (s *CredentialsStore) MustChange() bool {
 // Verify constant-time compares the candidate password against the
 // stored bcrypt hash. Returns true only when both username and
 // password match.
-func (s *CredentialsStore) Verify(username, password string) bool {
+func (s *Store) Verify(username, password string) bool {
 	s.mu.RLock()
 	user := s.data.Username
 	hash := s.data.PasswordHash
@@ -188,15 +188,15 @@ func (s *CredentialsStore) Verify(username, password string) bool {
 // Clears MustChange. Empty new password rejected; minimum length
 // 6 chars (intentionally low for a single-user home setup — the
 // real backstop is the LAN-only deployment).
-func (s *CredentialsStore) ChangePassword(oldPass, newPass string) error {
+func (s *Store) ChangePassword(oldPass, newPass string) error {
 	if len(newPass) < 6 {
-		return errors.New("web: new password must be at least 6 characters")
+		return errors.New("credentials: new password must be at least 6 characters")
 	}
 	s.mu.RLock()
 	hash := s.data.PasswordHash
 	s.mu.RUnlock()
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(oldPass)) != nil {
-		return errors.New("web: old password incorrect")
+		return errors.New("credentials: old password incorrect")
 	}
 	newHash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcryptCost)
 	if err != nil {
@@ -231,7 +231,7 @@ func NewSessionStore() *SessionStore {
 }
 
 // Issue mints a fresh 32-byte token bound to username, valid for
-// sessionTTL. Returns the opaque cookie value.
+// SessionTTL. Returns the opaque cookie value.
 func (s *SessionStore) Issue(username string) (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -242,7 +242,7 @@ func (s *SessionStore) Issue(username string) (string, error) {
 	defer s.mu.Unlock()
 	s.byTok[tok] = session{
 		username: username,
-		expires:  time.Now().Add(sessionTTL),
+		expires:  time.Now().Add(SessionTTL),
 	}
 	s.gcLocked()
 	return tok, nil

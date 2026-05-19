@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"github.com/xxl6097/argus-app/interval/store/settings"
 )
 
 // handleSettings multiplexes GET / POST / DELETE on /api/settings.
@@ -75,7 +76,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.WorkStart != "" || in.WorkEnd != "" {
-			if err := s.settings.Update(Settings{WorkStart: in.WorkStart, WorkEnd: in.WorkEnd}); err != nil {
+			if err := s.settings.Update(settings.Settings{WorkStart: in.WorkStart, WorkEnd: in.WorkEnd}); err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
 			}

@@ -1,4 +1,4 @@
-package web
+package credentials
 
 import (
 	"os"
@@ -12,7 +12,7 @@ import (
 func TestCredentialsSeedDefault(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
-	cs := NewCredentialsStore(path)
+	cs := New(path)
 
 	if got := cs.Username(); got != "admin" {
 		t.Fatalf("Username = %q, want admin", got)
@@ -40,12 +40,12 @@ func TestCredentialsSeedDefault(t *testing.T) {
 }
 
 // TestCredentialsChangePassword 验证改密成功后 must_change 清除,
-// 旧密码不再可用, 新密码可用; 改密后会落盘并被下次 NewCredentialsStore
+// 旧密码不再可用, 新密码可用; 改密后会落盘并被下次 New
 // 读到 (不会再 seed)。
 func TestCredentialsChangePassword(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
-	cs := NewCredentialsStore(path)
+	cs := New(path)
 
 	if err := cs.ChangePassword("wrong-old", "newpass1"); err == nil {
 		t.Fatal("wrong old password should error")
@@ -67,7 +67,7 @@ func TestCredentialsChangePassword(t *testing.T) {
 	}
 
 	// 重新 load 后应保留新 hash, 不被 seedDefault 覆盖
-	cs2 := NewCredentialsStore(path)
+	cs2 := New(path)
 	if cs2.MustChange() {
 		t.Fatal("reload should preserve must_change=false")
 	}

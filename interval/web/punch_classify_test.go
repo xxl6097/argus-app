@@ -5,6 +5,8 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/store/settings"
+	"github.com/xxl6097/argus-app/interval/store/history"
 )
 
 // classifyPunchEvent has four code paths:
@@ -27,15 +29,15 @@ const (
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
-	hist := NewHistoryStore(dir)
-	settings := NewSettingsStore("") // in-memory
-	if err := settings.Update(Settings{WorkStart: tcWorkStart, WorkEnd: tcWorkEnd}); err != nil {
+	hist := history.New(dir)
+	sett := settings.New("") // in-memory
+	if err := sett.Update(settings.Settings{WorkStart: tcWorkStart, WorkEnd: tcWorkEnd}); err != nil {
 		t.Fatalf("settings update: %v", err)
 	}
-	if err := settings.AddPunch(tcMac); err != nil {
+	if err := sett.AddPunch(tcMac); err != nil {
 		t.Fatalf("AddPunch: %v", err)
 	}
-	return &Server{history: hist, settings: settings}
+	return &Server{history: hist, settings: sett}
 }
 
 func mkOnline(when time.Time) argus.Event {

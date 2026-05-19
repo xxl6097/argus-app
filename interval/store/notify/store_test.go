@@ -1,4 +1,4 @@
-package web
+package notify
 
 import (
 	"os"
@@ -13,7 +13,7 @@ import (
 func TestNotifyStoreSetNeverDeletes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "notifications.json")
-	s := NewNotifyStore(path, nil)
+	s := New(path, nil)
 
 	const mac = "AA:BB:CC:DD:EE:01"
 	cfg := NotifyConfig{
@@ -62,7 +62,7 @@ func TestNotifyStoreSetNeverDeletes(t *testing.T) {
 func TestNotifyStorePersistMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "notifications.json")
-	s := NewNotifyStore(path, nil)
+	s := New(path, nil)
 	if err := s.Set("AA:BB:CC:DD:EE:02", NotifyConfig{WebhookURL: "https://example.com/h"}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}

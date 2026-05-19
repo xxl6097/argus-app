@@ -1,9 +1,8 @@
-package web
+package history
 
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,12 +11,15 @@ import (
 	"time"
 
 	argus "github.com/xxl6097/argusd"
+	"github.com/xxl6097/argus-app/interval/util"
+	"github.com/xxl6097/argus-app/interval/store/holidays"
+	"github.com/xxl6097/argus-app/interval/store/override"
 )
 
-// HistoryRetention is how long per-MAC online/offline records are kept
+// Retention is how long per-MAC online/offline records are kept
 // on disk and returned by /api/history. Records older than this are
 // dropped on the next compaction pass (append-time, cheap).
-const HistoryRetention = 30 * 24 * time.Hour
+const Retention = 30 * 24 * time.Hour
 
 // historyCompactEvery triggers an in-place rewrite of a MAC's jsonl
 // file once it grows past this many lines, to bound disk usage even
@@ -38,28 +40,28 @@ type HistoryEntry struct {
 	Source   string `json:"src,omitempty"` // "fetcher:ahsapd" | "syslog:WPA_COMPLETE" | "seed"
 }
 
-// HistoryStore is an append-only per-MAC event log backed by JSONL
+// Store is an append-only per-MAC event log backed by JSONL
 // files under dir/history/<mac>.jsonl.
 //
 // Only ONLINE / OFFLINE events are recorded (CHANGE is noise for
 // presence math). Concurrency: one mutex per MAC via a sharded map;
 // read/write to disparate MACs do not contend.
-type HistoryStore struct {
+type Store struct {
 	dir string
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-MAC write serialization
 }
 
-// NewHistoryStore constructs a history store rooted at dir. Passing
+// New constructs a history store rooted at dir. Passing
 // an empty dir disables persistence entirely (Record becomes a no-op
 // and Query returns an empty slice).
 //
 // The constructor is best-effort: it creates dir if it doesn't
 // exist, but doesn't fail on permission errors — subsequent writes
 // will surface the problem.
-func NewHistoryStore(dir string) *HistoryStore {
-	s := &HistoryStore{dir: dir, locks: make(map[string]*sync.Mutex)}
+func New(dir string) *Store {
+	s := &Store{dir: dir, locks: make(map[string]*sync.Mutex)}
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
@@ -67,7 +69,7 @@ func NewHistoryStore(dir string) *HistoryStore {
 }
 
 // macLock returns the write lock for a MAC, creating it on first use.
-func (s *HistoryStore) macLock(mac string) *sync.Mutex {
+func (s *Store) macLock(mac string) *sync.Mutex {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if m, ok := s.locks[mac]; ok {
@@ -80,8 +82,8 @@ func (s *HistoryStore) macLock(mac string) *sync.Mutex {
 
 // macFile returns the on-disk path for a MAC. Filename uses `-` in
 // place of `:` for portability even though Linux handles `:` fine.
-func (s *HistoryStore) macFile(mac string) string {
-	safe := strings.ReplaceAll(normalizeMAC(mac), ":", "-")
+func (s *Store) macFile(mac string) string {
+	safe := strings.ReplaceAll(util.NormalizeMAC(mac), ":", "-")
 	return filepath.Join(s.dir, safe+".jsonl")
 }
 
@@ -92,7 +94,7 @@ func (s *HistoryStore) macFile(mac string) string {
 // the typical values are "fetcher:<kind>" for poll-based detection,
 // "syslog:<kind>" for syslog-driven detection, "seed" for the startup
 // baseline and "" when the caller didn't bother to compute it.
-func (s *HistoryStore) Record(e argus.Event, source string) {
+func (s *Store) Record(e argus.Event, source string) {
 	if s.dir == "" {
 		return
 	}
@@ -105,11 +107,11 @@ func (s *HistoryStore) Record(e argus.Event, source string) {
 	default:
 		return
 	}
-	mac := normalizeMAC(e.Device.MAC)
+	mac := util.NormalizeMAC(e.Device.MAC)
 	if mac == "" {
 		return
 	}
-	ts := nonZeroTime(e.Time)
+	ts := util.NonZeroTime(e.Time)
 	entry := HistoryEntry{
 		TimeMs:   ts.UnixMilli(),
 		Kind:     kind,
@@ -144,13 +146,13 @@ func (s *HistoryStore) Record(e argus.Event, source string) {
 // Query returns entries for a MAC between [from, to], oldest first.
 // A zero from means "earliest retained"; a zero to means "now".
 // Returns an empty slice when the MAC has no history.
-func (s *HistoryStore) Query(mac string, from, to time.Time) ([]HistoryEntry, error) {
+func (s *Store) Query(mac string, from, to time.Time) ([]HistoryEntry, error) {
 	if s.dir == "" {
 		return nil, nil
 	}
-	mac = normalizeMAC(mac)
+	mac = util.NormalizeMAC(mac)
 	if mac == "" {
-		return nil, errors.New("web: history query requires mac")
+		return nil, errors.New("history: history query requires mac")
 	}
 	path := s.macFile(mac)
 	lk := s.macLock(mac)
@@ -164,14 +166,14 @@ func (s *HistoryStore) Query(mac string, from, to time.Time) ([]HistoryEntry, er
 // anchor the currently-online set without double-counting an
 // uninterrupted session across restarts.
 //
-// Also opportunistically prunes entries older than HistoryRetention,
+// Also opportunistically prunes entries older than Retention,
 // so retention changes between versions take effect on next boot
 // instead of having to wait for the chatty-device compaction trigger.
-func (s *HistoryStore) SeedBaseline(dev argus.Device, at time.Time) {
+func (s *Store) SeedBaseline(dev argus.Device, at time.Time) {
 	if s.dir == "" {
 		return
 	}
-	mac := normalizeMAC(dev.MAC)
+	mac := util.NormalizeMAC(dev.MAC)
 	if mac == "" {
 		return
 	}
@@ -187,7 +189,7 @@ func (s *HistoryStore) SeedBaseline(dev argus.Device, at time.Time) {
 		return // already online in the log, don't duplicate
 	}
 	entry := HistoryEntry{
-		TimeMs:   nonZeroTime(at).UnixMilli(),
+		TimeMs:   util.NonZeroTime(at).UnixMilli(),
 		Kind:     "ONLINE",
 		IP:       dev.IP,
 		Hostname: dev.Hostname,
@@ -207,9 +209,9 @@ func (s *HistoryStore) SeedBaseline(dev argus.Device, at time.Time) {
 }
 
 // compactLocked rewrites a MAC's jsonl dropping entries older than
-// HistoryRetention. Caller must hold the per-MAC lock.
-func (s *HistoryStore) compactLocked(mac, path string) {
-	cutoff := time.Now().Add(-HistoryRetention)
+// Retention. Caller must hold the per-MAC lock.
+func (s *Store) compactLocked(mac, path string) {
+	cutoff := time.Now().Add(-Retention)
 	entries, err := readEntries(path, cutoff, time.Time{})
 	if err != nil {
 		return
@@ -316,7 +318,7 @@ type Interval struct {
 
 // ComputeWorktime derives a worktime report for mac on the given date
 // using entries as the authoritative online/offline log, optionally
-// overridden by a manual Override for (mac, date).
+// overridden by a manual override.Override for (mac, date).
 //
 // dayKind selects one of three accounting branches:
 //
@@ -335,15 +337,15 @@ type Interval struct {
 //     OvertimeSecs = EarlyOT + LateOT.
 //     Supports 迟到 / 早退 / 漏刷卡 arrival/departure flags.
 //
-// Override semantics: Override.In replaces the "first online" anchor
-// with `date 00:00 + In`. Override.Out replaces the "last offline"
+// override.Override semantics: override.Override.In replaces the "first online" anchor
+// with `date 00:00 + In`. override.Override.Out replaces the "last offline"
 // anchor with `date 00:00 + Out`. Setting one but not the other
 // corrects a single boundary while the other comes from history.
 //
 // For "was already online at 00:00" the caller should pass entries
 // covering a window that extends back to the last transition before
 // 00:00 (see Server.handleWorktime).
-func ComputeWorktime(mac string, date time.Time, startHHMM, endHHMM string, entries []HistoryEntry, now time.Time, override Override, dayKind DayKind) WorktimeReport {
+func ComputeWorktime(mac string, date time.Time, startHHMM, endHHMM string, entries []HistoryEntry, now time.Time, override override.Override, dayKind holidays.DayKind) WorktimeReport {
 	loc := date.Location()
 	dayStart := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
 	dayEnd := dayStart.Add(24 * time.Hour)
@@ -356,7 +358,7 @@ func ComputeWorktime(mac string, date time.Time, startHHMM, endHHMM string, entr
 		Intervals: []Interval{},
 	}
 	if dayKind == 0 {
-		dayKind = DayKindWorkday
+		dayKind = holidays.DayKindWorkday
 	}
 	rep.DayKind = dayKind.String()
 	rep.OTDay = dayKind.IsOvertimeDay()
@@ -484,7 +486,7 @@ func ComputeWorktime(mac string, date time.Time, startHHMM, endHHMM string, entr
 		return rep
 	}
 
-	if dayKind == DayKindLegalHoliday {
+	if dayKind == holidays.DayKindLegalHoliday {
 		// Paid day off: track 在岗 if they did show up, but do not
 		// claim overtime. The user can mark the day as "workday"
 		// manually (e.g. 调休) to get overtime accounting instead.
@@ -534,7 +536,7 @@ func ComputeWorktime(mac string, date time.Time, startHHMM, endHHMM string, entr
 // time on day. Falls back to `defaultMin` minutes past midnight on
 // parse failure.
 func hhmmOnDay(day time.Time, hhmm string, defaultMin int) time.Time {
-	if secs, ok := parseClock(hhmm); ok {
+	if secs, ok := util.ParseClock(hhmm); ok {
 		return day.Add(time.Duration(secs) * time.Second)
 	}
 	return day.Add(time.Duration(defaultMin) * time.Minute)
@@ -599,8 +601,8 @@ func addInterval(rep *WorktimeReport, s, e time.Time) {
 // e.g. 09:00→18:30 = 9.5h = 34200s. Falls back to 9h on parse error.
 // Accepts HH:MM and HH:MM:SS.
 func standardSecs(startHHMM, endHHMM string) int64 {
-	s, ok1 := parseClock(startHHMM)
-	e, ok2 := parseClock(endHHMM)
+	s, ok1 := util.ParseClock(startHHMM)
+	e, ok2 := util.ParseClock(endHHMM)
 	if !ok1 || !ok2 || e <= s {
 		return int64(9 * time.Hour / time.Second)
 	}
@@ -608,37 +610,12 @@ func standardSecs(startHHMM, endHHMM string) int64 {
 }
 
 // parseHHMM returns minutes since midnight. Kept for callers that
-// only need minute resolution; new callers should use parseClock.
+// only need minute resolution; new callers should use util.ParseClock.
 func parseHHMM(v string) (int, bool) {
-	secs, ok := parseClock(v)
+	secs, ok := util.ParseClock(v)
 	if !ok {
 		return 0, false
 	}
 	return secs / 60, true
 }
 
-// parseClock returns seconds since midnight. Accepts "HH:MM" and
-// "HH:MM:SS" — the latter is what the worktime store now persists,
-// so missing seconds aren't silently truncated to :00.
-func parseClock(v string) (int, bool) {
-	parts := strings.Split(strings.TrimSpace(v), ":")
-	if len(parts) != 2 && len(parts) != 3 {
-		return 0, false
-	}
-	var h, m, s int
-	if _, err := fmt.Sscanf(parts[0], "%d", &h); err != nil {
-		return 0, false
-	}
-	if _, err := fmt.Sscanf(parts[1], "%d", &m); err != nil {
-		return 0, false
-	}
-	if len(parts) == 3 {
-		if _, err := fmt.Sscanf(parts[2], "%d", &s); err != nil {
-			return 0, false
-		}
-	}
-	if h < 0 || h > 24 || m < 0 || m > 59 || s < 0 || s > 59 {
-		return 0, false
-	}
-	return h*3600 + m*60 + s, true
-}

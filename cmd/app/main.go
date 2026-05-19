@@ -35,8 +35,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/xxl6097/argus-app/interval/owrt"
+	"github.com/xxl6097/argus-app/interval/release"
+	"github.com/xxl6097/argus-app/interval/store/alias"
+	"github.com/xxl6097/argus-app/interval/store/credentials"
+	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/store/holidays"
+	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/settings"
 	"github.com/xxl6097/argus-app/interval/web"
-	owrt "github.com/xxl6097/argusd"
+	owrtd "github.com/xxl6097/argusd"
 	"github.com/xxl6097/argusd/argusmetrics"
 )
 
@@ -87,7 +96,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags)
 	log.Printf("argus-app %s (commit %s, built %s)", Version, Commit, Date)
-	owrt.SetupLocalTimezone()
+	owrtd.SetupLocalTimezone()
 
 	// structured logger: slog.TextHandler → stderr (人可读, 同时可被 systemd 采集)
 	slogLevel := slog.LevelInfo
@@ -124,17 +133,17 @@ func main() {
 		}
 	}()
 
-	w := owrt.New(
-		owrt.OnFetcherDetected(func(k owrt.FetcherKind) {
+	w := owrtd.New(
+		owrtd.OnFetcherDetected(func(k owrtd.FetcherKind) {
 			log.Printf("已选择数据源: %s", k)
 		}),
-		owrt.WithDecisionHandler(func(d owrt.Decision) {
+		owrtd.WithDecisionHandler(func(d owrtd.Decision) {
 			metrics.OnDecision(d)
 			if os.Getenv("ARGUSD_DEBUG") == "1" {
 				onDecision(d)
 			}
 		}),
-		owrt.WithLogger(func(ctx context.Context, level owrt.LogLevel, msg string, attrs ...owrt.LogAttr) {
+		owrtd.WithLogger(func(ctx context.Context, level owrtd.LogLevel, msg string, attrs ...owrtd.LogAttr) {
 			sa := make([]slog.Attr, 0, len(attrs))
 			for _, a := range attrs {
 				sa = append(sa, slog.Any(a.Key, a.Value))
@@ -148,29 +157,29 @@ func main() {
 	var webServer *web.Server
 	var httpSrv *http.Server
 	if *listen != "" {
-		aliasStore := web.NewAliasStore(*aliasesPath)
+		aliasStore := alias.New(*aliasesPath)
 		opts := []web.Option{
 			web.WithDataDir(*dataDir),
 			web.WithAliases(aliasStore),
-			web.WithSettings(web.NewSettingsStore(*settingsPath)),
+			web.WithSettings(settings.New(*settingsPath)),
 		}
 		if *overridesPath != "" {
-			opts = append(opts, web.WithOverrides(web.NewOverrideStore(*overridesPath, aliasStore)))
+			opts = append(opts, web.WithOverrides(override.New(*overridesPath, aliasStore)))
 			log.Printf("手动工时编辑已启用 (file=%s, key=alias)", *overridesPath)
 		}
 		if *notifyPath != "" {
-			notifyStore := web.NewNotifyStore(*notifyPath, aliasStore)
-			notifier := web.NewNotifier(notifyStore, nil)
+			notifyStore := notify.New(*notifyPath, aliasStore)
+			notifier := notify.NewNotifier(notifyStore, nil)
 			opts = append(opts, web.WithNotifications(notifyStore, notifier))
 			log.Printf("通知设置已启用 (file=%s, webhook+ntfy)", *notifyPath)
 		}
 		if *holidaysPath != "" {
-			hs := web.NewHolidayStoreWithSystem(*holidaysPath, *holidaysSystemPath)
+			hs := holidays.NewWithSystem(*holidaysPath, *holidaysSystemPath)
 			// Offline / first-boot safety net: if the manual layer is
 			// empty AND we can't reach the network yet, at least seed
 			// the current year from the built-in 2026 table. Harmless
 			// when online — the API layer shadows these anyway.
-			hs.SeedDefaultsIfEmpty(web.CN2026Holidays())
+			hs.SeedDefaultsIfEmpty(holidays.CN2026Holidays())
 			opts = append(opts, web.WithHolidays(hs))
 			if *holidaysSystemPath != "" {
 				hs.StartAutoRefresh(*holidaysYearsAhead)
@@ -181,19 +190,19 @@ func main() {
 			}
 		}
 		if *historyDir != "" {
-			opts = append(opts, web.WithHistory(web.NewHistoryStore(*historyDir)))
+			opts = append(opts, web.WithHistory(history.New(*historyDir)))
 			log.Printf("设备上下线历史已启用 (dir=%s, retention=30d)", *historyDir)
 		}
 		// Auto-detect OpenWrt uci; enable /api/dhcp + dashboard static-IP
 		// button when available, silently skip otherwise (dev laptops).
-		if dhcp, err := web.NewUCIDHCPManager(); err == nil {
+		if dhcp, err := owrt.NewUCIDHCPManager(); err == nil {
 			opts = append(opts, web.WithDHCPManager(dhcp))
 			log.Println("DHCP 静态租约管理已启用 (uci)")
 		} else {
 			log.Printf("DHCP 静态租约管理未启用: %v", err)
 		}
 		if *credentialsPath != "" {
-			creds := web.NewCredentialsStore(*credentialsPath)
+			creds := credentials.New(*credentialsPath)
 			opts = append(opts, web.WithCredentials(creds))
 			if creds.MustChange() {
 				log.Printf("Web UI 登录已启用 (file=%s) — 首次启动: 用户 %q 密码 admin/admin, 登录后会强制修改", *credentialsPath, creds.Username())
@@ -203,7 +212,7 @@ func main() {
 		} else {
 			log.Println("Web UI 登录已禁用 (-credentials=\"\") — 任何 LAN 用户都能访问仪表板")
 		}
-		opts = append(opts, web.WithVersion(web.VersionInfo{
+		opts = append(opts, web.WithVersion(release.VersionInfo{
 			Version: Version, Commit: Commit, Date: Date,
 		}, "xxl6097/argus-app"))
 		webServer = web.NewServer(w, opts...)
@@ -226,7 +235,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始拉取失败: %v", err)
 	}
-	fmt.Println(owrt.RenderTable(devices))
+	fmt.Println(owrtd.RenderTable(devices))
 
 	// Seed the history store with the currently-online baseline so
 	// devices that never flap during this session still show as
@@ -248,13 +257,13 @@ func main() {
 	// /api/history 落盘的每个 ONLINE/OFFLINE 都能携带 src 字段
 	// (syslog:WPA_COMPLETE / fetcher:ahsapd / ...)
 	go func() {
-		handler := func(e owrt.SyslogEvent) {
+		handler := func(e owrtd.SyslogEvent) {
 			onSyslog(e)
 			if webServer != nil {
 				webServer.OnSyslog(e)
 			}
 		}
-		if err := owrt.WatchSyslog(exitCtx, handler, onError); err != nil {
+		if err := owrtd.WatchSyslog(exitCtx, handler, onError); err != nil {
 			log.Printf("系统日志监听异常退出: %v", err)
 		}
 	}()
@@ -266,7 +275,7 @@ func main() {
 		runCtx, cancelRun := context.WithCancel(exitCtx)
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- w.Run(runCtx, func(e owrt.Event) {
+			runDone <- w.Run(runCtx, func(e owrtd.Event) {
 				metrics.OnEvent(e)
 				if webServer != nil {
 					webServer.OnEvent(e)
@@ -350,12 +359,12 @@ func printMetricsSnapshot(m *argusmetrics.Counters) {
 
 // onEvent 是库回调的事件处理函数, 演示如何按事件类型展示信息。
 // 库返回的 e.Kind 是英文状态码 (ONLINE/OFFLINE/CHANGE), 通过 Label() 拿中文文案打印。
-func onEvent(e owrt.Event) {
+func onEvent(e owrtd.Event) {
 	ts := e.Time.Format("2006-01-02 15:04:05")
 	switch e.Kind {
-	case owrt.EventOnline, owrt.EventOffline:
+	case owrtd.EventOnline, owrtd.EventOffline:
 		fmt.Printf("[%s] %s %s\n", ts, e.Kind.Label(), e.Device)
-	case owrt.EventChange:
+	case owrtd.EventChange:
 		parts := make([]string, 0, len(e.Changes))
 		for _, c := range e.Changes {
 			parts = append(parts, fmt.Sprintf("%s %q→%q", c.Field, c.Old, c.New))
@@ -365,10 +374,10 @@ func onEvent(e owrt.Event) {
 }
 
 // onSyslog 处理系统日志事件。
-func onSyslog(e owrt.SyslogEvent) {
+func onSyslog(e owrtd.SyslogEvent) {
 	ts := e.Time.Format("2006-01-02 15:04:05")
 	switch e.Kind {
-	case owrt.SyslogDHCPAck:
+	case owrtd.SyslogDHCPAck:
 		fmt.Printf("[%s] [系统日志] %s %s IP=%s\n", ts, e.Kind.Label(), strings.ToUpper(e.MAC), e.IP)
 	default:
 		iface := ""
@@ -382,7 +391,7 @@ func onSyslog(e owrt.SyslogEvent) {
 // onDecision 打印 Watcher 内部判定链路, 用于调试和观测。
 // 业务消费者通常不需要关心, 本示例打印是为了演示决策过程可见性。
 // 仅在 ARGUSD_DEBUG=1 时启用, 因为频率较高 (每秒几十行)。
-func onDecision(d owrt.Decision) {
+func onDecision(d owrtd.Decision) {
 	ts := d.Time.Format("2006-01-02 15:04:05")
 	mac := strings.ToUpper(d.MAC)
 	if d.Detail == "" {

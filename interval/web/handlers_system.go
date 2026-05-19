@@ -1,34 +1,17 @@
-// system.go — POST /api/system/reboot and POST /api/system/restart-network
-// handlers.
-//
-// Both are exposed via Server.mux in newServer and auth-gated by
-// writeAuth. Reboot runs /sbin/reboot in a detached goroutine after a
-// short delay so the HTTP response has time to reach the client before
-// the kernel tears everything down. Restart-network runs
-// /etc/init.d/network restart and returns the command output; it's
-// less destructive (5-15 s LAN blip) but still wipes every in-flight
-// TCP session.
-//
-// Both are opt-in from the dashboard (red-bordered double confirmation)
-// because they interrupt the very channel the user is connecting over.
-
+// handlers_system.go — /api/system/{reboot,restart-network}.
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
+
+	"github.com/xxl6097/argus-app/interval/owrt"
+	"context"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-// Overridable so tests don't actually reboot or reload the host
-// running `go test`.
-var (
-	rebootBinary   = "/sbin/reboot"
-	netRestartArgv = []string{"/etc/init.d/network", "restart"}
-)
 
 func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -40,7 +23,7 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
 		return
 	}
-	if _, err := exec.LookPath(rebootBinary); err != nil {
+	if _, err := exec.LookPath(owrt.RebootBinary); err != nil {
 		writeJSONErr(w, http.StatusServiceUnavailable,
 			"reboot binary not available: "+err.Error())
 		return
@@ -50,7 +33,7 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	// anyway once reboot(8) starts.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		_ = exec.Command(rebootBinary).Run()
+		_ = exec.Command(owrt.RebootBinary).Run()
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -69,13 +52,13 @@ func (s *Server) handleRestartNetwork(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusForbidden, "write denied by auth policy")
 		return
 	}
-	if len(netRestartArgv) == 0 {
+	if len(owrt.NetRestartArgv) == 0 {
 		writeJSONErr(w, http.StatusServiceUnavailable, "restart command not configured")
 		return
 	}
-	if _, err := exec.LookPath(netRestartArgv[0]); err != nil {
+	if _, err := exec.LookPath(owrt.NetRestartArgv[0]); err != nil {
 		writeJSONErr(w, http.StatusServiceUnavailable,
-			netRestartArgv[0]+" not available: "+err.Error())
+			owrt.NetRestartArgv[0]+" not available: "+err.Error())
 		return
 	}
 	// Detach from the request context: /etc/init.d/network restart takes
@@ -85,11 +68,11 @@ func (s *Server) handleRestartNetwork(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(ctx, netRestartArgv[0], netRestartArgv[1:]...).Run()
+		_ = exec.CommandContext(ctx, owrt.NetRestartArgv[0], owrt.NetRestartArgv[1:]...).Run()
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":      true,
-		"message": "network restart dispatched: " + strings.Join(netRestartArgv, " "),
+		"message": "network restart dispatched: " + strings.Join(owrt.NetRestartArgv, " "),
 	})
 }

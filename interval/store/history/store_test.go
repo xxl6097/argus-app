@@ -1,10 +1,11 @@
-package web
+package history
 
 import (
-	"os"
-	"path/filepath"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/holidays"
 	"testing"
 	"time"
+	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // TestParseClock verifies the HH:MM / HH:MM:SS parser handles all
@@ -30,18 +31,18 @@ func TestParseClock(t *testing.T) {
 		{"abc", 0, false},
 	}
 	for _, tt := range tests {
-		got, ok := parseClock(tt.in)
+		got, ok := util.ParseClock(tt.in)
 		if tt.ok {
 			if !ok {
-				t.Errorf("parseClock(%q) unexpected error", tt.in)
+				t.Errorf("util.ParseClock(%q) unexpected error", tt.in)
 				continue
 			}
 			if got != tt.want {
-				t.Errorf("parseClock(%q) = %d, want %d", tt.in, got, tt.want)
+				t.Errorf("util.ParseClock(%q) = %d, want %d", tt.in, got, tt.want)
 			}
 		} else {
 			if ok {
-				t.Errorf("parseClock(%q) expected error, got %d", tt.in, got)
+				t.Errorf("util.ParseClock(%q) expected error, got %d", tt.in, got)
 			}
 		}
 	}
@@ -73,7 +74,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 		name              string
 		date              time.Time
 		entries           []HistoryEntry
-		dayKind           DayKind
+		dayKind           holidays.DayKind
 		wantPresent       int64 // seconds
 		wantEarlyOT       int64
 		wantLateOT        int64
@@ -85,7 +86,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 			name:              "workday: early+late OT",
 			date:              workday,
 			entries:           workdayEntries,
-			dayKind:           DayKindWorkday,
+			dayKind:           holidays.DayKindWorkday,
 			wantPresent:       11 * 3600, // 19:00 - 08:00
 			wantEarlyOT:       1 * 3600,  // 09:00 - 08:00
 			wantLateOT:        30 * 60,   // 19:00 - 18:30
@@ -97,7 +98,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 			name:              "weekend: all present = OT",
 			date:              weekend,
 			entries:           weekendEntries,
-			dayKind:           DayKindWeekend,
+			dayKind:           holidays.DayKindWeekend,
 			wantPresent:       6 * 3600,
 			wantEarlyOT:       0,
 			wantLateOT:        0,
@@ -109,7 +110,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 			name:              "holiday: no OT",
 			date:              workday,
 			entries:           workdayEntries,
-			dayKind:           DayKindLegalHoliday,
+			dayKind:           holidays.DayKindLegalHoliday,
 			wantPresent:       11 * 3600,
 			wantEarlyOT:       0,
 			wantLateOT:        0,
@@ -121,7 +122,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 			name:              "makeup: same as workday",
 			date:              weekend,
 			entries:           weekendEntries,
-			dayKind:           DayKindMakeupWorkday,
+			dayKind:           holidays.DayKindMakeupWorkday,
 			wantPresent:       7 * 3600, // 16:00 - min(10:00, 09:00) = 16:00 - 09:00 = 7h
 			wantEarlyOT:       0,        // 10:00 > 09:00, so late
 			wantLateOT:        0,        // 16:00 < 18:30, so early leave
@@ -133,7 +134,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 			name:              "otday: all present = OT",
 			date:              workday,
 			entries:           workdayEntries,
-			dayKind:           DayKindOTDay,
+			dayKind:           holidays.DayKindOTDay,
 			wantPresent:       11 * 3600,
 			wantEarlyOT:       0,
 			wantLateOT:        0,
@@ -146,7 +147,7 @@ func TestComputeWorktime_DayKinds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			now := tt.date.Add(24 * time.Hour) // next day
-			got := ComputeWorktime(mac, tt.date, "09:00", "18:30", tt.entries, now, Override{}, tt.dayKind)
+			got := ComputeWorktime(mac, tt.date, "09:00", "18:30", tt.entries, now, override.Override{}, tt.dayKind)
 			if got.PresentSecs != tt.wantPresent {
 				t.Errorf("present_secs = %d, want %d", got.PresentSecs, tt.wantPresent)
 			}
@@ -194,7 +195,7 @@ func TestComputeWorktime_ArrivalStatus(t *testing.T) {
 				{TimeMs: date.Add(20 * time.Hour).UnixMilli(), Kind: "OFFLINE", IP: "192.168.1.10", Hostname: "test"},
 			}
 			now := date.Add(24 * time.Hour)
-			got := ComputeWorktime(mac, date, "09:00", "18:30", entries, now, Override{}, DayKindWorkday)
+			got := ComputeWorktime(mac, date, "09:00", "18:30", entries, now, override.Override{}, holidays.DayKindWorkday)
 			if got.ArrivalStatus != tt.wantArrival {
 				t.Errorf("arrival_status = %q, want %q", got.ArrivalStatus, tt.wantArrival)
 			}
@@ -226,76 +227,10 @@ func TestComputeWorktime_DepartureStatus(t *testing.T) {
 				{TimeMs: date.Add(tt.lastOut).UnixMilli(), Kind: "OFFLINE", IP: "192.168.1.10", Hostname: "test"},
 			}
 			now := date.Add(24 * time.Hour)
-			got := ComputeWorktime(mac, date, "09:00", "18:30", entries, now, Override{}, DayKindWorkday)
+			got := ComputeWorktime(mac, date, "09:00", "18:30", entries, now, override.Override{}, holidays.DayKindWorkday)
 			if got.DepartureStatus != tt.wantDeparture {
 				t.Errorf("departure_status = %q, want %q", got.DepartureStatus, tt.wantDeparture)
 			}
 		})
 	}
-}
-
-// TestOverrideStore_Migration verifies the flat → nested migration on load.
-func TestOverrideStore_Migration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "overrides.json")
-	// Write old flat format: {alias: {YYYY-MM-DD: {in, out}}}
-	flat := `{
-  "iphone17": {
-    "2026-05-13": {"in": "08:40", "out": "19:15"},
-    "2026-05-14": {"in": "09:00", "out": "18:30"}
-  }
-}`
-	if err := os.WriteFile(path, []byte(flat), 0644); err != nil {
-		t.Fatal(err)
-	}
-	store := NewOverrideStore(path, nil)
-	// After load, it should auto-migrate to nested.
-	got, ok := store.Lookup("iphone17", "2026-05-13")
-	if !ok {
-		t.Fatal("expected override for 2026-05-13")
-	}
-	if got.In != "08:40" || got.Out != "19:15" {
-		t.Errorf("got {%q, %q}, want {08:40, 19:15}", got.In, got.Out)
-	}
-	// Check the on-disk format is now nested.
-	raw, _ := os.ReadFile(path)
-	if !contains(string(raw), `"2026-05"`) {
-		t.Errorf("expected nested month key 2026-05 in migrated file, got:\n%s", raw)
-	}
-}
-
-// TestHolidayStore_Priority verifies manual > system > weekend fallback.
-func TestHolidayStore_Priority(t *testing.T) {
-	dir := t.TempDir()
-	manualPath := filepath.Join(dir, "holidays.json")
-	systemPath := filepath.Join(dir, "holidays_system.json")
-
-	// System layer says 2026-05-17 (Saturday) is a makeup workday.
-	system := `{"2026-05-17": "workday"}`
-	if err := os.WriteFile(systemPath, []byte(system), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Manual layer overrides it to holiday.
-	manual := `{"2026-05-17": "holiday"}`
-	if err := os.WriteFile(manualPath, []byte(manual), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	store := NewHolidayStoreWithSystem(manualPath, systemPath)
-	loc := time.Local
-	sat := time.Date(2026, 5, 17, 0, 0, 0, 0, loc)
-	got := store.Kind(sat)
-	if got != DayKindLegalHoliday {
-		t.Errorf("Kind(2026-05-17) = %v, want DayKindLegalHoliday (manual should win)", got)
-	}
-}
-
-// Helper: check if s contains substr.
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

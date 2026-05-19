@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"github.com/xxl6097/argus-app/interval/store/credentials"
 )
 
 // defaultLANAuth1 keeps the previous "loopback or private network"
@@ -102,7 +103,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		c, err := r.Cookie(cookieName)
+		c, err := r.Cookie(credentials.CookieName)
 		if err == nil {
 			if user, ok := s.sessions.Validate(c.Value); ok {
 				ctx := contextWithUser(r.Context(), user)
@@ -171,7 +172,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	if c, err := r.Cookie(cookieName); err == nil {
+	if c, err := r.Cookie(credentials.CookieName); err == nil {
 		if _, ok := s.sessions.Validate(c.Value); ok {
 			http.Redirect(w, r, nextOrRoot(r), http.StatusFound)
 			return
@@ -214,7 +215,7 @@ func (s *Server) handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     credentials.CookieName,
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,
@@ -234,11 +235,11 @@ func (s *Server) handleAPILogout(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if c, err := r.Cookie(cookieName); err == nil && s.sessions != nil {
+	if c, err := r.Cookie(credentials.CookieName); err == nil && s.sessions != nil {
 		s.sessions.Revoke(c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     credentials.CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -287,7 +288,7 @@ func (s *Server) handleAPIPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     credentials.CookieName,
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,

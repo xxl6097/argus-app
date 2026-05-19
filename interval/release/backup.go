@@ -1,4 +1,4 @@
-package web
+package release
 
 import (
 	"archive/tar"
@@ -44,7 +44,7 @@ const (
 
 	// Hard caps on the import side. The export side has no caps because
 	// it runs against trusted local data.
-	maxImportArchiveBytes  = int64(32 << 20)  // 32 MiB compressed upload
+	MaxImportArchiveBytes  = int64(32 << 20)  // 32 MiB compressed upload
 	maxImportPerFileBytes  = int64(16 << 20)  // 16 MiB per entry uncompressed
 	maxImportTotalUncompr  = int64(100 << 20) // 100 MiB across all entries (zip-bomb guard)
 	maxImportEntries       = 4096             // file count guard
@@ -63,12 +63,12 @@ type BackupManifest struct {
 	Files          []string  `json:"files"`
 }
 
-// packDataDir streams a gzipped tar of dataDir to w. Skips dotfiles,
+// PackDataDir streams a gzipped tar of dataDir to w. Skips dotfiles,
 // .tmp, .bak, and the manifest itself (which is injected at the end).
 // Returns the number of file entries packed (excluding manifest).
-func packDataDir(dataDir, exporterVersion string, w io.Writer) (int, error) {
+func PackDataDir(dataDir, exporterVersion string, w io.Writer) (int, error) {
 	if dataDir == "" {
-		return 0, errors.New("web: data dir not configured")
+		return 0, errors.New("release: data dir not configured")
 	}
 	st, err := os.Stat(dataDir)
 	if err != nil {
@@ -230,23 +230,23 @@ type ImportResult struct {
 	Manifest *BackupManifest `json:"manifest,omitempty"`
 }
 
-// importBackup extracts r (a gzipped tar) into dataDir via a staging
+// ImportBackup extracts r (a gzipped tar) into dataDir via a staging
 // dir + atomic rename. The previous data dir is preserved as
 // <dataDir>.bak.<timestamp> so the user can roll back manually.
 //
 // When restoreCreds is false, credentials.json + notifications.json
 // are skipped during extract AND are copied over from the existing
 // data dir into the staging dir, so the swap doesn't lose them.
-func importBackup(dataDir string, r io.Reader, restoreCreds bool) (*ImportResult, error) {
+func ImportBackup(dataDir string, r io.Reader, restoreCreds bool) (*ImportResult, error) {
 	if dataDir == "" {
-		return nil, errors.New("web: data dir not configured")
+		return nil, errors.New("release: data dir not configured")
 	}
 	dataDir = filepath.Clean(dataDir)
 
 	// Limit how many bytes we'll read off the wire. Anything bigger
 	// is almost certainly a malicious upload; the real export of the
 	// argus-app data dir fits in well under 1 MiB on a normal install.
-	gzr, err := gzip.NewReader(io.LimitReader(r, maxImportArchiveBytes+1))
+	gzr, err := gzip.NewReader(io.LimitReader(r, MaxImportArchiveBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("gzip open: %w", err)
 	}
