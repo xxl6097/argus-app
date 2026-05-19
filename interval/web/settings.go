@@ -51,6 +51,15 @@ func NewSettingsStore(path string) *SettingsStore {
 	return s
 }
 
+// Reload re-reads the settings file from disk. Used after backup
+// import overwrites the JSON file.
+func (s *SettingsStore) Reload() {
+	s.mu.Lock()
+	s.data = Settings{WorkStart: "09:00", WorkEnd: "18:30"}
+	s.mu.Unlock()
+	s.load()
+}
+
 func (s *SettingsStore) load() {
 	if s.path == "" {
 		return

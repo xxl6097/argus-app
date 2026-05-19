@@ -575,8 +575,40 @@
       </div>
     </section>
 
+    <section class="set-sec">
+      <h4>备份与恢复</h4>
+      <div class="meta">导出 /etc/argus-app 全部数据。包含管理员密码哈希和 webhook 凭据, 请妥善保管。恢复时旧目录会自动备份到 /etc/argus-app.bak.&lt;时间戳&gt;。</div>
+      <div class="row">
+        <button class="hdr-btn" id="set-backup-export">📦 导出全部数据</button>
+        <button class="hdr-btn" id="set-backup-import-pick">📥 从备份恢复…</button>
+        <input type="file" id="set-backup-file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" hidden>
+      </div>
+      <span class="set-msg" id="set-backup-msg"></span>
+    </section>
+
     <div class="actions">
       <button class="hdr-btn" id="set-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 导入确认子 modal: 让用户在真正动数据前确认文件名 + 是否恢复凭据。 -->
+<div class="modal-mask" id="import-modal">
+  <div class="modal-card" style="max-width:500px">
+    <h3>📥 从备份恢复</h3>
+    <div class="meta" id="im-file-info">—</div>
+    <div class="notes" id="im-warn" style="background:rgba(229,192,123,0.08);border-color:rgba(229,192,123,0.45);color:var(--change)">
+      恢复操作会替换当前 /etc/argus-app 目录。旧目录会保留为 .bak.&lt;时间戳&gt; 以便回滚。
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="im-restore-creds" checked>
+      <span>同时恢复账户与凭据 (credentials + notifications)<br>
+        <span class="meta">取消勾选则保留当前登录密码与 webhook 凭据不变。</span>
+      </span>
+    </label>
+    <div class="actions">
+      <button class="hdr-btn" id="im-cancel">取消</button>
+      <button class="hdr-btn hdr-update" id="im-confirm">确认导入</button>
     </div>
   </div>
 </div>
@@ -2434,6 +2466,99 @@
       forward("set-reboot",      "btn-reboot");
       forward("set-passwd",      "btn-passwd");
       forward("set-logout",      "btn-logout");
+
+      // ---- 备份与恢复 ----
+      // 导出: 直接走 GET /api/backup/export. 因为 fetch 包装器加了
+      // X-Requested-With, 用它会把 cookie 跑出去但浏览器不会触发
+      // 下载. 这里用一个临时 <a download> 模拟点击, 等价于
+      // location.href 但能控制文件名而不污染历史记录.
+      const exportBtn  = document.getElementById("set-backup-export");
+      const importPick = document.getElementById("set-backup-import-pick");
+      const fileInput  = document.getElementById("set-backup-file");
+      const backupMsg  = document.getElementById("set-backup-msg");
+
+      function setBackupMsg(text, kind) {
+        backupMsg.textContent = text || "";
+        backupMsg.className = "set-msg" + (kind ? " " + kind : "");
+      }
+
+      exportBtn.addEventListener("click", () => {
+        setBackupMsg("正在生成备份…");
+        // 使用隐藏 <a> 触发下载; 服务端响应自带
+        // Content-Disposition, 浏览器按那里的 filename 保存.
+        const a = document.createElement("a");
+        a.href = "/api/backup/export";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { a.remove(); setBackupMsg("✓ 已开始下载", "ok"); }, 500);
+      });
+
+      // 导入: 点 picker → file input → 选完文件后跳到二级 modal 让
+      // 用户最终确认 + 选择是否恢复凭据. 这避免 "误点恢复" 直接
+      // 覆盖数据.
+      const im        = document.getElementById("import-modal");
+      const imInfo    = document.getElementById("im-file-info");
+      const imCreds   = document.getElementById("im-restore-creds");
+      const imConfirm = document.getElementById("im-confirm");
+      const imCancel  = document.getElementById("im-cancel");
+      let pendingFile = null;
+
+      importPick.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", () => {
+        if (!fileInput.files || !fileInput.files[0]) return;
+        pendingFile = fileInput.files[0];
+        const sizeKB = (pendingFile.size / 1024).toFixed(1);
+        imInfo.textContent = "文件: " + pendingFile.name + "  ·  " + sizeKB + " KB";
+        imCreds.checked = true;
+        im.classList.add("show");
+      });
+      function closeImport() {
+        im.classList.remove("show");
+        pendingFile = null;
+        // 重置 input 让用户能再次选同一个文件
+        fileInput.value = "";
+      }
+      imCancel.addEventListener("click", closeImport);
+      im.addEventListener("click", (ev) => { if (ev.target === im) closeImport(); });
+
+      imConfirm.addEventListener("click", async () => {
+        if (!pendingFile) return;
+        imConfirm.disabled = true;
+        const orig = imConfirm.textContent;
+        imConfirm.textContent = "导入中…";
+        setBackupMsg("正在导入…");
+        try {
+          const fd = new FormData();
+          fd.append("file", pendingFile);
+          fd.append("restore_credentials", imCreds.checked ? "true" : "false");
+          const r = await fetch("/api/backup/import", { method: "POST", body: fd });
+          const b = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            setBackupMsg("导入失败: " + (b.error || r.status), "err");
+            return;
+          }
+          const nRestored = (b.restored || []).length;
+          const nSkipped  = (b.skipped  || []).length;
+          let msg = "✓ 已恢复 " + nRestored + " 个文件";
+          if (nSkipped > 0) msg += ", 跳过 " + nSkipped;
+          if (b.backup_dir) msg += "; 旧目录 → " + b.backup_dir;
+          setBackupMsg(msg, "ok");
+          closeImport();
+          if (b.session_revoked) {
+            alert("已恢复账户与凭据。所有会话被强制登出, 请用新凭据重新登录。");
+            location.href = "/login";
+          } else {
+            // Reload so the new aliases/settings/etc. appear without a manual refresh.
+            setTimeout(() => location.reload(), 1500);
+          }
+        } catch (e) {
+          setBackupMsg("网络错误: " + e.message, "err");
+        } finally {
+          imConfirm.disabled = false;
+          imConfirm.textContent = orig;
+        }
+      });
     })();
 
     // ---- 版本号显示 + 在线检测升级 ----

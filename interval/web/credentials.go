@@ -76,6 +76,14 @@ func NewCredentialsStore(path string) *CredentialsStore {
 	return s
 }
 
+// Reload re-reads credentials.json from disk, replacing the in-memory
+// admin record. Used after backup import overwrites the file. If the
+// new file is missing or corrupt, the in-memory state is left as-is
+// (the caller should not have imported a missing credentials.json).
+func (s *CredentialsStore) Reload() bool {
+	return s.load()
+}
+
 // load returns true if a usable credential record was read off disk.
 func (s *CredentialsStore) load() bool {
 	if s.path == "" {

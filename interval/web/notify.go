@@ -85,6 +85,15 @@ func NewNotifyStore(path string, aliases *AliasStore) *NotifyStore {
 	return s
 }
 
+// Reload re-reads the notify config file from disk. Used after backup
+// import overwrites the JSON file.
+func (s *NotifyStore) Reload() {
+	s.mu.Lock()
+	s.data = make(map[string]NotifyConfig)
+	s.mu.Unlock()
+	s.load()
+}
+
 func (s *NotifyStore) load() {
 	if s.path == "" {
 		return

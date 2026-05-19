@@ -53,6 +53,15 @@ func NewAliasStore(path string) *AliasStore {
 	return s
 }
 
+// Reload re-reads the alias file from disk, replacing the in-memory
+// map. Used after /api/backup/import overwrites the JSON file.
+func (s *AliasStore) Reload() {
+	s.mu.Lock()
+	s.data = make(map[string]string)
+	s.mu.Unlock()
+	s.load()
+}
+
 func (s *AliasStore) load() {
 	if s.path == "" {
 		return

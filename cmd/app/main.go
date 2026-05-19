@@ -51,6 +51,7 @@ var (
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
+	dataDir := flag.String("data-dir", "/etc/argus-app", "data directory used by /api/backup/export and /api/backup/import; the per-store flags below default to files inside this directory")
 	aliasesPath := flag.String("aliases", "/etc/argus-app/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
 	settingsPath := flag.String("settings", "/etc/argus-app/settings.json", "path to the Web UI settings (me MAC + workday window); empty keeps settings in-memory only")
 	overridesPath := flag.String("overrides", "/etc/argus-app/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
@@ -132,6 +133,7 @@ func main() {
 	if *listen != "" {
 		aliasStore := web.NewAliasStore(*aliasesPath)
 		opts := []web.Option{
+			web.WithDataDir(*dataDir),
 			web.WithAliases(aliasStore),
 			web.WithSettings(web.NewSettingsStore(*settingsPath)),
 		}

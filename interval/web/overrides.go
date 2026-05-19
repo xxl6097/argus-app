@@ -61,6 +61,15 @@ func NewOverrideStore(path string, aliases *AliasStore) *OverrideStore {
 	return s
 }
 
+// Reload re-reads the overrides file from disk. Used after backup
+// import overwrites the JSON file.
+func (s *OverrideStore) Reload() {
+	s.mu.Lock()
+	s.data = make(map[string]map[string]Override)
+	s.mu.Unlock()
+	s.load()
+}
+
 func (s *OverrideStore) load() {
 	if s.path == "" {
 		return

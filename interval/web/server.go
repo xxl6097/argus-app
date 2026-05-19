@@ -78,6 +78,15 @@ const (
 // Option configures a Server at construction time.
 type Option func(*Server)
 
+// WithDataDir tells the server which directory holds the JSON stores
+// + history/ subdir, for the /api/backup/export and /api/backup/import
+// endpoints. When empty, those endpoints return 503. The default per-
+// store paths used by NewServer's callers all live inside this dir;
+// the server treats it as authoritative for "pack everything up".
+func WithDataDir(dir string) Option {
+	return func(s *Server) { s.dataDir = dir }
+}
+
 // WithOfflineRetention sets how long a device remains in the /api/devices
 // response after it goes offline. Zero or negative disables retention
 // entirely (offline devices drop out of the list immediately on
@@ -286,6 +295,10 @@ type Server struct {
 	// current FetcherKind (poll-based attribution) instead.
 	syslogMu    sync.Mutex
 	syslogHints map[string]syslogHint
+
+	// dataDir is the on-disk root holding the JSON stores + history/.
+	// Empty disables /api/backup/export and /api/backup/import.
+	dataDir string
 }
 
 // syslogHint is one direction-tagged syslog observation (connect side
@@ -374,6 +387,8 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s.mux.HandleFunc("/api/version", gate(s.handleVersion))
 	s.mux.HandleFunc("/api/version/check", gate(s.handleVersionCheck))
 	s.mux.HandleFunc("/api/upgrade", gate(s.handleUpgrade))
+	s.mux.HandleFunc("/api/backup/export", gate(s.handleBackupExport))
+	s.mux.HandleFunc("/api/backup/import", gate(s.handleBackupImport))
 	return s
 }
 

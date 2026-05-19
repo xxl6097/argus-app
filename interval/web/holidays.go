@@ -107,6 +107,17 @@ func NewHolidayStoreWithSystem(path, systemPath string) *HolidayStore {
 	return s
 }
 
+// Reload re-reads holidays.json + holidays_system.json from disk.
+// Used after backup import overwrites the JSON files.
+func (s *HolidayStore) Reload() {
+	s.mu.Lock()
+	s.data = make(map[string]string)
+	s.systemData = make(map[string]string)
+	s.mu.Unlock()
+	s.load()
+	s.loadSystem()
+}
+
 // SeedDefaultsIfEmpty seeds the given defaults when the store is
 // currently empty (first-run convenience). Best-effort; errors are
 // silently dropped — the user can always edit the file by hand
