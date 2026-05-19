@@ -369,6 +369,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	gate := s.requireAuth
 	s.mux.HandleFunc("/", gate(s.handleIndex))
 	s.mux.HandleFunc("/api/devices", gate(s.handleDevices))
+	s.mux.HandleFunc("/api/devices/kick", gate(s.handleDeviceKick))
 	s.mux.HandleFunc("/api/events", gate(s.handleEvents))
 	s.mux.HandleFunc("/api/aliases", gate(s.handleAliases))
 	s.mux.HandleFunc("/api/dhcp", gate(s.handleDHCP))

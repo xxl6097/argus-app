@@ -225,6 +225,15 @@
     background: rgba(138,143,152,0.1); color: var(--muted); opacity: 0.5;
   }
   .me-badge:hover { opacity: 1; background: rgba(229,192,123,0.15); color: var(--change); }
+  /* 踢下线徽章: 只对在线 + 非有线设备渲染。点击触发二次确认后 deauth, */
+  /* 颜色用 offline 红色暗示这是个破坏性动作。 */
+  .kick-badge {
+    display: inline-block; margin-left: 4px; padding: 0 5px;
+    background: rgba(240,113,120,0.10); color: var(--offline);
+    border-radius: 8px; font-size: 10px; font-weight: 500;
+    vertical-align: 1px; cursor: pointer; user-select: none; opacity: 0.6;
+  }
+  .kick-badge:hover { opacity: 1; background: rgba(240,113,120,0.22); }
   tr.detail-row > td {
     padding: 0; background: rgba(255,255,255,0.015); border-bottom: 1px solid var(--line);
   }
@@ -695,9 +704,14 @@
             ? '<span class="me-badge" data-action="toggle-me" title="当前的打卡设备,工作时长以此设备在线状态为准(点击取消)">打卡设备</span>'
             : '<span class="me-badge is-not-me" data-action="toggle-me" title="设为打卡设备,以此设备上下线记录为准统计工作时长与加班">设为打卡</span>')
         : '';
+      // 踢下线徽章: 只在线 + 非有线设备显示。有线设备无法 deauth, 离线
+      // 设备踢了也无意义 (重连后就上线了)。
+      const kickBadge = (!isOff && !d.wired)
+        ? '<span class="kick-badge" data-action="kick" title="踢下线: 强制断开此设备的 WiFi 连接, 设备会自动重连。适合临时屏蔽某个设备 30s。">踢下线</span>'
+        : '';
       tr.innerHTML =
         '<td><span class="expand-chev">▶</span>' + statusPill + '</td>' +
-        '<td class="mac" title="' + esc(d.mac) + '">' + esc(d.mac) + meBadge + '</td>' +
+        '<td class="mac" title="' + esc(d.mac) + '">' + esc(d.mac) + meBadge + kickBadge + '</td>' +
         '<td class="ip-cell" title="' + esc(d.ip || "") + '">' + ipCell(d, caps, leases) + '</td>' +
         '<td class="host" title="' + esc(hostTitle) + '">' + hostCell(d) + '</td>' +
         '<td class="vendor" title="' + esc(vendor) + '">' + esc(vendor) + '</td>' +
@@ -727,8 +741,11 @@
             ? ' <span class="me-badge" data-action="toggle-me" title="当前的打卡设备">打卡设备</span>'
             : ' <span class="me-badge is-not-me" data-action="toggle-me" title="设为打卡设备">设为打卡</span>')
         : '';
+      const kickBadge = (!isOff && !d.wired)
+        ? ' <span class="kick-badge" data-action="kick" title="踢下线">踢下线</span>'
+        : '';
       card.innerHTML =
-        '<div class="cr-mac" title="' + esc(d.mac) + '"><span class="expand-chev">▶</span>' + esc(d.mac) + meBadge + '</div>' +
+        '<div class="cr-mac" title="' + esc(d.mac) + '"><span class="expand-chev">▶</span>' + esc(d.mac) + meBadge + kickBadge + '</div>' +
         '<div class="cr-status">' + statusPill + '</div>' +
         '<div class="cr-host" title="' + esc(hostTitle) + '">' + hostCell(d) + ' <span class="ip">· ' + ipCell(d, caps, leases) + '</span></div>' +
         vendorRow +
@@ -804,10 +821,17 @@
       if (row) toggleMe(row.dataset.mac, meBtn.classList.contains("is-not-me"));
       return;
     }
+    const kickBtn = ev.target.closest(".kick-badge");
+    if (kickBtn) {
+      ev.stopPropagation();
+      const row = kickBtn.closest("[data-mac]");
+      if (row) kickDevice(row.dataset.mac);
+      return;
+    }
     // Click anywhere on a device row toggles the detail panel,
     // excluding any interactive cell (rename form, static-ip button,
     // me-badge) which have their own handlers above.
-    if (ev.target.closest("input, button, .rename-form, .rename-btn, .staticip-btn, .me-badge")) return;
+    if (ev.target.closest("input, button, .rename-form, .rename-btn, .staticip-btn, .me-badge, .kick-badge")) return;
     const devRow = ev.target.closest("tr.dev-row, .card-row.dev-row");
     if (devRow) toggleDetail(devRow);
   });
@@ -833,6 +857,43 @@
       }
       currentSettings = null;
       reloadDevices();
+    } catch (e) {
+      alert("网络错误: " + e.message);
+    }
+  }
+
+  // kickDevice 强制把某 WiFi 设备踢下线 (deauth)。
+  // 路由器侧只对在线 + 非有线设备渲染按钮, 后端再校验一次。
+  // 设备一般会自动重连; 后端的 ahsapd staDisconnect 默认 dismissTime=30s,
+  // 即 30 秒内同一 MAC 不被重新接入。
+  async function kickDevice(mac) {
+    if (!confirm(
+      "确定要把 " + mac + " 踢下线吗?\n\n" +
+      "• 设备的 WiFi 会立即断开\n" +
+      "• 多数情况下设备会自动重连 (~30 秒后)\n" +
+      "• 仅适用于无线设备, 有线设备无效"
+    )) return;
+    try {
+      const r = await fetch("/api/devices/kick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mac }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert("踢下线失败: " + (b.error || r.status));
+        return;
+      }
+      const t = document.createElement("div");
+      t.className = "toast";
+      if (b.kicked) {
+        t.innerHTML = "<b>已踢下线</b><br>" + esc(mac) + "<br><span style='opacity:.7'>" + esc(b.kicked) + "</span>";
+      } else {
+        t.innerHTML = "<b>已下发踢下线指令</b><br>" + esc(mac) + "<br>路由器无可用 deauth 工具, 仅作记录";
+      }
+      document.body.appendChild(t);
+      setTimeout(() => t.classList.add("fade"), 4000);
+      setTimeout(() => t.remove(), 4500);
     } catch (e) {
       alert("网络错误: " + e.message);
     }
