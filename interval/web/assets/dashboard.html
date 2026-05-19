@@ -577,7 +577,7 @@
 
     <section class="set-sec">
       <h4>备份与恢复</h4>
-      <div class="meta">导出 /etc/argus-app 全部数据。包含管理员密码哈希和 webhook 凭据, 请妥善保管。恢复时旧目录会自动备份到 /etc/argus-app.bak.&lt;时间戳&gt;。</div>
+      <div class="meta">导出 /etc/argus-app 全部数据。包含管理员密码哈希和 webhook 凭据, 请妥善保管。导入会替换当前数据目录。</div>
       <div class="row">
         <button class="hdr-btn" id="set-backup-export">📦 导出全部数据</button>
         <button class="hdr-btn" id="set-backup-import-pick">📥 从备份恢复…</button>
@@ -598,7 +598,7 @@
     <h3>📥 从备份恢复</h3>
     <div class="meta" id="im-file-info">—</div>
     <div class="notes" id="im-warn" style="background:rgba(229,192,123,0.08);border-color:rgba(229,192,123,0.45);color:var(--change)">
-      恢复操作会替换当前 /etc/argus-app 目录。旧目录会保留为 .bak.&lt;时间戳&gt; 以便回滚。
+      恢复操作会替换当前 /etc/argus-app 目录。此操作不可撤销, 请确保已保存好备份文件。
     </div>
     <label style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer">
       <input type="checkbox" id="im-restore-creds" checked>
@@ -2542,7 +2542,6 @@
           const nSkipped  = (b.skipped  || []).length;
           let msg = "✓ 已恢复 " + nRestored + " 个文件";
           if (nSkipped > 0) msg += ", 跳过 " + nSkipped;
-          if (b.backup_dir) msg += "; 旧目录 → " + b.backup_dir;
           setBackupMsg(msg, "ok");
           closeImport();
           if (b.session_revoked) {

@@ -143,7 +143,6 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 		"ok":              true,
 		"restored":        res.Restored,
 		"skipped":         res.Skipped,
-		"backup_dir":      res.BackupDir,
 		"manifest":        res.Manifest,
 		"session_revoked": sessionRevoked,
 	})

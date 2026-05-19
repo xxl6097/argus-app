@@ -225,10 +225,9 @@ func writeTarFile(tw *tar.Writer, name string, mode int64, body []byte, mtime ti
 
 // ImportResult summarises what /api/backup/import did.
 type ImportResult struct {
-	Restored      []string `json:"restored"`
-	Skipped       []string `json:"skipped"`
-	BackupDir     string   `json:"backup_dir"`
-	Manifest      *BackupManifest `json:"manifest,omitempty"`
+	Restored []string        `json:"restored"`
+	Skipped  []string        `json:"skipped"`
+	Manifest *BackupManifest `json:"manifest,omitempty"`
 }
 
 // importBackup extracts r (a gzipped tar) into dataDir via a staging
@@ -416,9 +415,12 @@ func importBackup(dataDir string, r io.Reader, restoreCreds bool) (*ImportResult
 		}
 	}
 
-	// Atomic-ish swap: rename live → .bak, rename staging → live.
-	// If the second rename fails, try to restore .bak so we don't
-	// leave the user with no data dir at all.
+	// Two-step swap with rollback safety: rename live → .bak first
+	// (so we have something to restore if the second rename fails),
+	// then rename staging → live, then unconditionally remove .bak.
+	// The .bak dir only exists for the few microseconds between the
+	// two renames; after a successful import there's nothing left
+	// on disk besides the new data dir.
 	bakDir := dataDir + ".bak." + time.Now().UTC().Format("20060102-150405")
 	hadLive := false
 	if _, err := os.Stat(dataDir); err == nil {
@@ -430,21 +432,24 @@ func importBackup(dataDir string, r io.Reader, restoreCreds bool) (*ImportResult
 		return nil, fmt.Errorf("stat live dir: %w", err)
 	}
 	if err := os.Rename(staging, dataDir); err != nil {
-		// Attempt to restore.
+		// Roll back: put the old live dir back so the user isn't left
+		// with no data dir at all.
 		if hadLive {
 			_ = os.Rename(bakDir, dataDir)
 		}
 		return nil, fmt.Errorf("activate staging: %w", err)
 	}
+	// Swap succeeded — purge the rollback dir. Best-effort: a failure
+	// here just leaves a one-off .bak.<ts> on disk; not worth failing
+	// the whole import for.
+	if hadLive {
+		_ = os.RemoveAll(bakDir)
+	}
 
 	res := &ImportResult{
-		Restored:  restored,
-		Skipped:   skipped,
-		BackupDir: bakDir,
-		Manifest:  manifest,
-	}
-	if !hadLive {
-		res.BackupDir = "" // nothing to roll back to
+		Restored: restored,
+		Skipped:  skipped,
+		Manifest: manifest,
 	}
 	return res, nil
 }
