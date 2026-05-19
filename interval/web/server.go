@@ -2124,8 +2124,26 @@ func (s *Server) dispatchNotify(e argus.Event) {
 		keyword = s.settings.Get().WebhookKeyword
 	}
 
-	// 1) Global webhook (settings-level): fires for ANY device. Optional;
-	//    skipped when not configured.
+	// "Opt-in" gate: only devices with a per-device notify entry are
+	// allowed to push *anything* — global webhook included. Without
+	// this, the global webhook would broadcast every transient
+	// MAC-table flap from random LAN clients (smart bulbs, neighbours'
+	// phones associating then leaving, etc.). The per-device entry
+	// IS the user's "I care about this device" signal.
+	hasNotifyConfig := false
+	var deviceCfg NotifyConfig
+	if s.notifyStore != nil {
+		if cfg, ok := s.notifyStore.Lookup(e.Device.MAC); ok {
+			hasNotifyConfig = true
+			deviceCfg = cfg
+		}
+	}
+	if !hasNotifyConfig {
+		return // device not opted in → neither global nor per-device fires
+	}
+
+	// 1) Global webhook (settings-level): fires only for opted-in
+	//    devices, gated above. Optional; skipped when not configured.
 	if s.settings != nil {
 		if gURL := s.settings.Get().GlobalWebhookURL; gURL != "" {
 			gp := s.formatNotifyMarkdown(e, when, displayName, mac, globalIsPunch, sourceText)
@@ -2141,25 +2159,22 @@ func (s *Server) dispatchNotify(e argus.Event) {
 		}
 	}
 
-	// 2) Per-device webhook + ntfy: only when an entry exists for this MAC
-	//    AND, for punch devices, only on real check-in / check-out.
+	// 2) Per-device webhook + ntfy: skipped for transient punch events
+	//    (so the user doesn't get spammed "上班了" 5x a day) but the
+	//    global webhook above already covered those.
 	if cls == punchEventTransient {
-		return // suppress per-device entirely
+		return
 	}
-	if s.notifyStore != nil {
-		if cfg, ok := s.notifyStore.Lookup(e.Device.MAC); ok {
-			dp := s.formatNotifyMarkdown(e, when, displayName, mac, deviceIsPunch, sourceText)
-			if source != "" {
-				dp["source"] = source
-			}
-			if sourceText != "" {
-				dp["source_label"] = sourceText
-			}
-			dp["scope"] = "device"
-			appendWebhookKeyword(dp, keyword)
-			s.notifier.Dispatch(mac, cfg, dp, e.Kind.String())
-		}
+	dp := s.formatNotifyMarkdown(e, when, displayName, mac, deviceIsPunch, sourceText)
+	if source != "" {
+		dp["source"] = source
 	}
+	if sourceText != "" {
+		dp["source_label"] = sourceText
+	}
+	dp["scope"] = "device"
+	appendWebhookKeyword(dp, keyword)
+	s.notifier.Dispatch(mac, deviceCfg, dp, e.Kind.String())
 }
 
 // appendWebhookKeyword stamps `keyword` onto the payload's markdown
