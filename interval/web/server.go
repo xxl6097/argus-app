@@ -1673,6 +1673,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"work_start":         cfg.WorkStart,
 			"work_end":           cfg.WorkEnd,
 			"global_webhook_url": cfg.GlobalWebhookURL,
+			"webhook_keyword":    cfg.WebhookKeyword,
 		})
 	case http.MethodPost:
 		if !s.writeAuth(r) {
@@ -1685,6 +1686,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			WorkStart        string  `json:"work_start,omitempty"`
 			WorkEnd          string  `json:"work_end,omitempty"`
 			GlobalWebhookURL *string `json:"global_webhook_url,omitempty"`
+			WebhookKeyword   *string `json:"webhook_keyword,omitempty"`
 			// Legacy alias: older clients posted {"me_mac": "AA:.."} to
 			// set the single punch device. Treat it as add-only.
 			MeMAC string `json:"me_mac,omitempty"`
@@ -1706,6 +1708,13 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		// Global webhook URL
 		if in.GlobalWebhookURL != nil {
 			if err := s.settings.SetGlobalWebhook(*in.GlobalWebhookURL); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		// Webhook keyword (appended to bodies for dingtalk/feishu keyword filters)
+		if in.WebhookKeyword != nil {
+			if err := s.settings.SetWebhookKeyword(*in.WebhookKeyword); err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
 			}
@@ -2108,6 +2117,13 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	deviceIsPunch := cls == punchEventCheckIn || cls == punchEventCheckOut
 	globalIsPunch := deviceIsPunch
 
+	// Resolve dingtalk/feishu keyword once — same suffix appended to
+	// every body, regardless of which webhook channel it lands on.
+	keyword := ""
+	if s.settings != nil {
+		keyword = s.settings.Get().WebhookKeyword
+	}
+
 	// 1) Global webhook (settings-level): fires for ANY device. Optional;
 	//    skipped when not configured.
 	if s.settings != nil {
@@ -2120,6 +2136,7 @@ func (s *Server) dispatchNotify(e argus.Event) {
 				gp["source_label"] = sourceText
 			}
 			gp["scope"] = "global"
+			appendWebhookKeyword(gp, keyword)
 			s.notifier.Dispatch(mac, NotifyConfig{WebhookURL: gURL}, gp, e.Kind.String())
 		}
 	}
@@ -2139,8 +2156,29 @@ func (s *Server) dispatchNotify(e argus.Event) {
 				dp["source_label"] = sourceText
 			}
 			dp["scope"] = "device"
+			appendWebhookKeyword(dp, keyword)
 			s.notifier.Dispatch(mac, cfg, dp, e.Kind.String())
 		}
+	}
+}
+
+// appendWebhookKeyword stamps `keyword` onto the payload's markdown
+// title + text so dingtalk/feishu robots configured with a keyword
+// security policy let the message through. No-op when keyword is
+// empty or the payload doesn't carry a markdown sub-object.
+func appendWebhookKeyword(payload map[string]any, keyword string) {
+	if keyword == "" {
+		return
+	}
+	md, ok := payload["markdown"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	if t, ok := md["title"].(string); ok {
+		md["title"] = t + " " + keyword
+	}
+	if t, ok := md["text"].(string); ok {
+		md["text"] = t + "\n\n——" + keyword
 	}
 }
 

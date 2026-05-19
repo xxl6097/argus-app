@@ -28,6 +28,10 @@ type Settings struct {
 	WorkStart        string   `json:"work_start,omitempty"`
 	WorkEnd          string   `json:"work_end,omitempty"`
 	GlobalWebhookURL string   `json:"global_webhook_url,omitempty"`
+	// WebhookKeyword is appended to every webhook body (markdown text
+	// + title) so dingtalk/feishu robots that have keyword filters
+	// configured will let the message through. Empty = no append.
+	WebhookKeyword string `json:"webhook_keyword,omitempty"`
 }
 
 // SettingsStore is a tiny JSON-file-backed settings store, mirroring
@@ -249,6 +253,21 @@ func (s *SettingsStore) SetGlobalWebhook(raw string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data.GlobalWebhookURL = raw
+	return s.persistLocked()
+}
+
+// SetWebhookKeyword sets or clears the keyword appended to every
+// webhook body. Used to satisfy dingtalk/feishu keyword-filter
+// security policies. Empty = no append. Length capped at 64 to keep
+// the markdown footer compact.
+func (s *SettingsStore) SetWebhookKeyword(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 64 {
+		return errors.New("web: webhook_keyword too long (max 64 chars)")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.WebhookKeyword = raw
 	return s.persistLocked()
 }
 

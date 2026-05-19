@@ -563,6 +563,10 @@
       <div class="meta">所有设备 ONLINE / OFFLINE 都会推一份到这里。留空 = 关闭。每设备 webhook (设备详情 → 信息设置) 仍独立工作, 互不替代。</div>
       <div class="row">
         <input type="url" id="set-global-webhook" placeholder="https://example.com/hook" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="meta" style="margin-top:6px">钉钉/飞书机器人「自定义关键词」: 设置后会自动追加到每条消息末尾, 用于通过关键词安全策略。如不需要可留空。</div>
+      <div class="row">
+        <input type="text" id="set-webhook-keyword" placeholder="例如: argus 或 通知" autocomplete="off" maxlength="64" style="flex:1;min-width:0;background:rgba(0,0,0,0.25);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:13px">
         <button class="hdr-btn" id="set-save-webhook">保存</button>
       </div>
       <span class="set-msg" id="set-save-msg"></span>
@@ -2453,6 +2457,7 @@
       const sm          = document.getElementById("settings-modal");
       if (!settingsBtn || !sm) return;
       const inWebhook   = document.getElementById("set-global-webhook");
+      const inKeyword   = document.getElementById("set-webhook-keyword");
       const saveBtn     = document.getElementById("set-save-webhook");
       const saveMsg     = document.getElementById("set-save-msg");
       const closeBtn    = document.getElementById("set-close");
@@ -2469,6 +2474,7 @@
           if (r.ok) {
             const j = await r.json();
             inWebhook.value = j.global_webhook_url || "";
+            if (inKeyword) inKeyword.value = j.webhook_keyword || "";
           }
         } catch (_) { /* best-effort */ }
       }
@@ -2490,6 +2496,7 @@
 
       saveBtn.addEventListener("click", async () => {
         const url = inWebhook.value.trim();
+        const keyword = (inKeyword ? inKeyword.value : "").trim();
         if (url && !/^https?:\/\//i.test(url)) {
           setMsg("URL 需以 http:// 或 https:// 开头", "err");
           return;
@@ -2501,7 +2508,7 @@
           const r = await fetch("/api/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ global_webhook_url: url }),
+            body: JSON.stringify({ global_webhook_url: url, webhook_keyword: keyword }),
           });
           if (r.ok) {
             setMsg(url ? "✓ 已保存" : "✓ 已关闭全局 webhook", "ok");
