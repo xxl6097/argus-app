@@ -49,7 +49,24 @@ var (
 )
 
 func main() {
+	// Bare-word "help" subcommand convention (so `argus-app help`
+	// works the same as `argus-app -h`). Stdlib's flag package only
+	// special-cases the "-" prefixed forms.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "help", "-help", "--help", "-h":
+			flag.Usage = printUsage
+			printUsage()
+			return
+		case "version", "-v", "--version":
+			printVersion()
+			return
+		}
+	}
+	flag.Usage = printUsage
+
 	showVersion := flag.Bool("version", false, "print version and exit")
+	showVersionShort := flag.Bool("v", false, "print version and exit (short for -version)")
 	listen := flag.String("listen", "", "optional Web UI listen address (e.g. 127.0.0.1:9099); empty disables")
 	dataDir := flag.String("data-dir", "/etc/argus-app", "data directory used by /api/backup/export and /api/backup/import; the per-store flags below default to files inside this directory")
 	aliasesPath := flag.String("aliases", "/etc/argus-app/aliases.json", "path to the Web UI alias store (MAC -> friendly name); empty keeps aliases in-memory only")
@@ -63,8 +80,8 @@ func main() {
 	historyDir := flag.String("history-dir", "/etc/argus-app/history", "directory for per-MAC online/offline history; empty disables history + worktime")
 	flag.Parse()
 
-	if *showVersion {
-		fmt.Printf("argus-app %s (commit %s, built %s)\n", Version, Commit, Date)
+	if *showVersion || *showVersionShort {
+		printVersion()
 		return
 	}
 
@@ -378,4 +395,82 @@ func onDecision(d owrt.Decision) {
 // onError 处理库上报的非致命拉取错误。
 func onError(err error) {
 	log.Printf("拉取设备列表失败: %v", err)
+}
+
+// printVersion 输出一行版本信息, -v / -version / version 子命令共用。
+func printVersion() {
+	fmt.Printf("argus-app %s (commit %s, built %s)\n", Version, Commit, Date)
+}
+
+// printUsage 是 flag.Usage 的实现, 同时被 -h / -help / help 子命令调用。
+// 写到 stdout (而不是 flag 默认的 stderr), 这样 `argus-app -h | less` 也能用。
+//
+// 内容分四段: 简介 → 常用例子 → 安装/卸载 → 完整 flag 表 + 信号 + 环境变量。
+func printUsage() {
+	out := flag.CommandLine.Output()
+	if out == os.Stderr {
+		out = os.Stdout
+		flag.CommandLine.SetOutput(out)
+	}
+	fmt.Fprintf(out, `argus-app %s — OpenWrt WiFi 考勤 / 工时统计仪表板
+
+用法:
+  argus-app [选项]
+  argus-app -version | -v        打印版本号
+  argus-app -help | -h | help    显示本帮助
+
+常用例子:
+  argus-app -listen=0.0.0.0:9099                            最常用: 启动 Web UI 监听全网
+  argus-app -listen=127.0.0.1:9099                          只允许本机访问
+  argus-app -listen=0.0.0.0:9099 -credentials=""            关闭登录闸刀 (仅开发)
+  argus-app -listen=0.0.0.0:9099 -data-dir=/srv/argus       自定义数据目录
+  ARGUSD_DEBUG=1 argus-app -listen=0.0.0.0:9099             开启调试日志
+
+安装到 OpenWrt 路由器 (一键脚本):
+  wget -O- https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+  curl -fsSL https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+
+  国内 GitHub 访问慢时, 用加速镜像:
+    wget -O- https://gh-proxy.com/https://github.com/xxl6097/argus-app/releases/latest/download/install.sh | sh
+    wget -O- https://cdn.jsdelivr.net/gh/xxl6097/argus-app@main/install.sh | sh
+
+  常用环境变量 (传给 install.sh):
+    PORT=18099            修改 Web UI 端口 (默认 9099)
+    VERSION=v0.1.x        指定版本 (默认 latest)
+    PROXY=https://...     强制走某个加速前缀 (默认自动 fallback)
+    PROXY=none            强制只直连 GitHub
+    FORCE=1               覆盖已有 init 脚本 (默认升级时只换二进制)
+
+服务管理 (procd):
+  /etc/init.d/argus-app start | stop | restart | reload | status
+  /etc/init.d/argus-app enable | disable
+  logread -e argus-app                  查看日志
+  logread -f -e argus-app               实时跟踪日志
+
+升级 (推荐用仪表板 ⚙ 设置 → 在线检测升级):
+  仪表板右上角版本徽章 → 点击 → 「立即升级」, 自动 30-60 秒完成。
+
+卸载 (保留数据):
+  /etc/init.d/argus-app stop && /etc/init.d/argus-app disable
+  rm -f /usr/bin/argus-app /etc/init.d/argus-app
+
+彻底清除 (含数据, 谨慎):
+  rm -rf /etc/argus-app
+
+信号:
+  SIGINT / SIGTERM       优雅退出
+  SIGHUP                 重启 Watcher (保留 known / cooldown)
+  SIGUSR1                打印一次 metrics 快照到 stderr
+
+环境变量:
+  ARGUSD_DEBUG=1         启用 slog Debug 级别 + 决策 trace
+
+完整选项:
+`, Version)
+	// flag.PrintDefaults 会把每个 flag 的 -name / 默认值 / 帮助文本一次列完。
+	flag.PrintDefaults()
+	fmt.Fprintf(out, `
+更多文档: https://github.com/xxl6097/argus-app
+问题反馈: https://github.com/xxl6097/argus-app/issues
+`)
 }
