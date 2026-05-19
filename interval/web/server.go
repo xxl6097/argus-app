@@ -2054,6 +2054,15 @@ func sourceLabel(src string) string {
 // webhook/ntfy destinations. Either / both may be enabled; the
 // payload carries a `scope` field ("global" or "device") so the
 // receiver can tell them apart.
+//
+// Punch-device transient suppression: for devices flagged as 打卡设备,
+// only the "real" check-in (first ONLINE of the day) and check-out
+// (OFFLINE at/after WorkEnd) fire the heavyweight per-device webhook
+// with worktime stats. Lunch returns / WiFi blips during the day still
+// fire the *global* webhook (so the activity log stays complete) but
+// suppress the per-device channel and downgrade the body to the
+// lightweight "上线啦/下线啦" form — otherwise users get spammed with
+// "【alias】上班了" every time the phone reconnects.
 func (s *Server) dispatchNotify(e argus.Event) {
 	if s.notifier == nil {
 		return
@@ -2086,42 +2095,119 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	source := s.sourceFor(e)
 	sourceText := sourceLabel(source)
 
-	base := s.formatNotifyMarkdown(e, when, displayName, mac, isPunch, sourceText)
-	if source != "" {
-		base["source"] = source
-	}
-	if sourceText != "" {
-		base["source_label"] = sourceText
-	}
+	// Classify: for punch devices, decide whether this event is a
+	// "real" check-in/check-out (fires both global + per-device) or
+	// transient noise (global only, lightweight body).
+	cls := s.classifyPunchEvent(e, isPunch, when)
+
+	// Per-device webhook gets the heavyweight worktime body only for
+	// real check-in/check-out. Global webhook always gets the
+	// lightweight form for transient events (because spamming the
+	// receiver with "【alias】上班了" 5x a day is the very thing the
+	// user is trying to avoid).
+	deviceIsPunch := cls == punchEventCheckIn || cls == punchEventCheckOut
+	globalIsPunch := deviceIsPunch
 
 	// 1) Global webhook (settings-level): fires for ANY device. Optional;
 	//    skipped when not configured.
 	if s.settings != nil {
 		if gURL := s.settings.Get().GlobalWebhookURL; gURL != "" {
-			gp := clonePayload(base)
+			gp := s.formatNotifyMarkdown(e, when, displayName, mac, globalIsPunch, sourceText)
+			if source != "" {
+				gp["source"] = source
+			}
+			if sourceText != "" {
+				gp["source_label"] = sourceText
+			}
 			gp["scope"] = "global"
 			s.notifier.Dispatch(mac, NotifyConfig{WebhookURL: gURL}, gp, e.Kind.String())
 		}
 	}
 
-	// 2) Per-device webhook + ntfy: only when an entry exists for this MAC.
+	// 2) Per-device webhook + ntfy: only when an entry exists for this MAC
+	//    AND, for punch devices, only on real check-in / check-out.
+	if cls == punchEventTransient {
+		return // suppress per-device entirely
+	}
 	if s.notifyStore != nil {
 		if cfg, ok := s.notifyStore.Lookup(e.Device.MAC); ok {
-			dp := clonePayload(base)
+			dp := s.formatNotifyMarkdown(e, when, displayName, mac, deviceIsPunch, sourceText)
+			if source != "" {
+				dp["source"] = source
+			}
+			if sourceText != "" {
+				dp["source_label"] = sourceText
+			}
 			dp["scope"] = "device"
 			s.notifier.Dispatch(mac, cfg, dp, e.Kind.String())
 		}
 	}
 }
 
-// clonePayload makes a shallow copy of the notification payload so each
-// dispatch can stamp its own `scope` without racing the other goroutine.
-func clonePayload(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in)+1)
-	for k, v := range in {
-		out[k] = v
+// punchEventClass is the classifier output for dispatchNotify.
+type punchEventClass int
+
+const (
+	// punchEventNotPunch — this device isn't a 打卡设备; don't apply
+	// any of the punch-aware suppression. dispatchNotify treats it
+	// as a regular device.
+	punchEventNotPunch punchEventClass = iota
+	// punchEventCheckIn — first ONLINE of the day for a punch device.
+	// Fires both global + per-device with the heavyweight 上班了 body.
+	punchEventCheckIn
+	// punchEventCheckOut — OFFLINE at/after WorkEnd for a punch device.
+	// Fires both global + per-device with the heavyweight 下班了 body.
+	punchEventCheckOut
+	// punchEventTransient — punch device, but this is a same-day
+	// re-ONLINE or a pre-WorkEnd OFFLINE. Fires global ONLY, with the
+	// lightweight 上线啦/下线啦 body. Per-device is suppressed.
+	punchEventTransient
+)
+
+// classifyPunchEvent decides how to route e for a punch device. See
+// punchEventClass docs for the four buckets. Returns punchEventNotPunch
+// (i.e. "no special handling") whenever isPunch is false, history is
+// unattached, or settings is unattached — so the suppression logic
+// silently degrades to the legacy behaviour on test setups that don't
+// wire up all stores.
+func (s *Server) classifyPunchEvent(e argus.Event, isPunch bool, when time.Time) punchEventClass {
+	if !isPunch || s.history == nil || s.settings == nil {
+		return punchEventNotPunch
 	}
-	return out
+	mac := normalizeMAC(e.Device.MAC)
+	whenLocal := when.In(time.Local)
+	dayStart := time.Date(whenLocal.Year(), whenLocal.Month(), whenLocal.Day(), 0, 0, 0, 0, time.Local)
+	// Slight forward padding: history.Record for THIS event has already
+	// run by the time dispatchNotify gets here (see OnEvent ordering),
+	// so we explicitly slice [00:00, when - 1ms] to count only PRIOR
+	// transitions today.
+	priorTo := whenLocal.Add(-time.Millisecond)
+	entries, err := s.history.Query(mac, dayStart, priorTo)
+	if err != nil {
+		return punchEventCheckIn // fail-open: treat as real, never silently drop
+	}
+	switch e.Kind {
+	case argus.EventOnline:
+		// First ONLINE today = check-in. Any prior ONLINE today = transient.
+		for _, h := range entries {
+			if h.Kind == "ONLINE" {
+				return punchEventTransient
+			}
+		}
+		return punchEventCheckIn
+	case argus.EventOffline:
+		cfg := s.settings.Get()
+		endSec, ok := parseClock(cfg.WorkEnd)
+		if !ok {
+			return punchEventCheckOut // unparseable WorkEnd → never suppress
+		}
+		nowSec := whenLocal.Hour()*3600 + whenLocal.Minute()*60 + whenLocal.Second()
+		if nowSec < endSec {
+			return punchEventTransient
+		}
+		return punchEventCheckOut
+	}
+	return punchEventNotPunch
 }
 
 // formatNotifyMarkdown renders the per-device markdown body. Punch
