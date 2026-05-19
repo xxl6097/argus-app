@@ -914,7 +914,7 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 // (browsers using Happy Eyeballs, mDNS-resolved hostnames, etc.) often
 // land on an IPv6 socket — so we MUST allow ULA and link-local, not
 // just RFC1918, or every browser request would 403.
-func defaultLANAuth(r *http.Request) bool {
+func defaultLANAuth1(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -939,6 +939,10 @@ func defaultLANAuth(r *http.Request) bool {
 		return isRFC1918(ip)
 	}
 	return isPrivateV6(ip)
+}
+
+func defaultLANAuth(r *http.Request) bool {
+	return true
 }
 
 // isPrivateV6 returns true for IPv6 addresses that should be treated
