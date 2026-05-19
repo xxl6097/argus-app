@@ -213,17 +213,22 @@ logread | grep argus-app | tail -20
 
 ### 五、首次配置
 
-打开 Web UI 后建议按这个顺序操作：
-
-1. **设置工作时间**：右上角任意打卡设备的「工作时长」tab → 「设置」按钮 → 填写 `work_start` / `work_end`，保存。
-2. **挑选打卡设备**：在主表里点设备行最右的「**设为打卡**」徽章，把你常用的手机 / 笔记本加为打卡设备。
-3. **重命名设备**（可选）：每行「✎」按钮起一个易记名字（`iphone17`、`work-laptop`），后续所有持久化文件都会用别名做 key，比 MAC 友好。
-4. **配置通知**（可选）：进入设备详情 → 「⚙ 信息设置」tab，填 Webhook / ntfy 服务器，保存即生效。
-5. **设静态 IP**（可选）：每行 IP 旁边「📌」按钮 → 弹窗勾「立即生效」可以瞬断一次让设备拿到新 IP。
+1. **首次登录**：浏览器访问 `http://<路由器 IP>:9099`，被重定向到 `/login`。默认账号 `admin / admin`，登录后强制改密；新密码至少 6 位。后续在右上角 ⚙ 「设置 → 账户」 里随时改密 / 退出。
+2. **设置工作时间**：右上角 ⚙ 「设置」 → 不在这里，标准工时入口仍在打卡设备的「工作时长」 tab → 「设置」 按钮 → 填写 `work_start` / `work_end`，保存。
+3. **挑选打卡设备**：在主表里点设备行最右的「**设为打卡**」 徽章，把你常用的手机 / 笔记本加为打卡设备。
+4. **重命名设备**（可选）：每行「✎」 按钮起一个易记名字（`iphone17`、`work-laptop`），后续所有持久化文件都会用别名做 key，比 MAC 友好。
+5. **配置全局 Webhook**（可选）：⚙ 「设置 → 全局通知 Webhook」 填一条 URL，**任何设备**上下线都会推一份过去（payload 带 `scope:"global"`），适合「全屋设备总线」 这种监控。
+6. **配置每设备通知**（可选）：进入设备详情 → 「⚙ 信息设置」 tab，填 Webhook / ntfy 服务器，保存即生效；与全局 webhook 并行触发，不互相替代。
+7. **设静态 IP**（可选）：每行 IP 旁边「📌」 按钮 → 弹窗勾「立即生效」 可以瞬断一次让设备拿到新 IP。
+8. **导出备份**（可选）：⚙ 「设置 → 备份与恢复」 → 「📦 导出全部数据」 一键下载 `argus-app-backup-<时间戳>.tar.gz`，部署到新路由器后用同一个面板的「📥 从备份恢复」 还原。
 
 ### 六、升级与卸载
 
-**升级**：
+**升级（推荐：UI 一键升级）**：
+
+仪表板右上角的版本徽章 (`v0.1.x`) 会在后台轮询 GitHub Releases，发现新版会变橙并加 🆙 标记。点击徽章 → 「立即升级」，路由器会自己下载、替换二进制、重启服务，整个过程 30–60 秒，期间页面短暂不可用。
+
+**升级（手动）**：
 
 ```bash
 /etc/init.d/argus-app stop
@@ -264,8 +269,10 @@ rm -rf /etc/argus-app
 - **单文件部署**：纯 Go，零外部依赖（HTML 嵌入二进制）。CGO 关闭，交叉编译到 ARM64
   跑在主流 OpenWrt 路由器上（MT7981、ipq60xx 等）。
 - **零侵入**：不动路由器原生功能。所有持久化都在 `/etc/argus-app/*.json` 单独管理。
-- **本地优先**：默认绑定 `0.0.0.0:9099`，按 RFC1918 网段做写权限控制，不需要鉴权服务。
+- **Web UI 自带登录**：cookie session + bcrypt，首次启动播种 `admin/admin`，强制改密。
 - **自治**：每天凌晨从公开 API 拉取国家法定节假日，省下手工维护。
+- **在线升级**：仪表板可直接探测最新 release 并触发自我升级，无需 SSH。
+- **数据可携**：⚙ 系统设置里一键导出 `/etc/argus-app` 全量备份, 一键恢复到新路由器。
 
 ---
 
@@ -276,15 +283,22 @@ argus-app/
 ├── cmd/app/main.go                  # 入口 + 命令行参数
 ├── interval/web/
 │   ├── server.go                    # HTTP / SSE / 路由总线
+│   ├── credentials.go               # bcrypt 登录凭据 + session 存储
+│   ├── version.go                   # GitHub Releases 探测 + 自升级触发
+│   ├── backup.go                    # /etc/argus-app 数据目录 tar.gz 打包/解包
+│   ├── backup_handlers.go           # /api/backup/export | /api/backup/import
 │   ├── aliases.go                   # MAC → 友好名 持久化
 │   ├── dhcp.go                      # OpenWrt uci 静态 IP 管理
 │   ├── system.go                    # 重启网络 / 重启路由器
 │   ├── history.go                   # 上下线历史 + 工时计算核心
-│   ├── settings.go                  # 打卡设备列表 + 标准工时配置
+│   ├── settings.go                  # 打卡设备 + 标准工时 + 全局 Webhook
 │   ├── overrides.go                 # 按月嵌套的 (alias, date) 手动工时覆写
 │   ├── holidays.go                  # 双层节假日存储 + timor.tech 自动拉取
 │   ├── notify.go                    # 每设备 Webhook + ntfy 推送 / 订阅
-│   └── assets/dashboard.html        # 单文件 Web UI（vanilla JS + EventSource）
+│   ├── assets/dashboard.html        # 单文件 Web UI（vanilla JS + EventSource）
+│   └── assets/login.html            # 登录页（含强制改密流程）
+├── packaging/openwrt/argus-app.init # procd init 脚本
+├── install.sh                       # 一键安装脚本（带镜像回退）
 ├── buildAndUpRun.sh                 # 交叉编译 + 上传 + 启动 一键脚本
 └── go.mod
 ```
@@ -371,6 +385,28 @@ argus-app/
 - 打卡设备 OFFLINE → 「【alias】下班了」+ 下班时间 + 今日加班 + 本月加班
 - 普通设备 → 「【alias】上线啦 / 下线啦」+ 设备 / IP / MAC / 时间
 
+### 10. 全局 Webhook（`settings.json`）
+独立于每设备 webhook 的「**全屋总线**」：在 ⚙ 设置中填一条 URL，**任何**设备的 ONLINE/OFFLINE 都额外推一份过去；payload 多带一个 `scope` 字段（`"global"` vs `"device"`），方便消费端区分两种来源、避免重复处理。每设备 webhook + 全局 webhook 同时生效, 互不替代。
+
+### 11. Web UI 登录（`credentials.json`）
+- **bcrypt + cookie session**：首次启动播种 `admin / admin` 并标记 `must_change`，登录后强制改密；密码不少于 6 位
+- 文件强制 `0600`，保存的是 bcrypt 哈希（cost=10），明文密码不落盘
+- 服务端 session 存于内存（24 小时 TTL），改密后所有其它会话失效
+- 路径置空（`-credentials=""`）禁用登录闸刀，仅供本地开发
+
+### 12. 在线升级（GitHub Releases）
+- 后台轮询 `api.github.com/.../releases/latest`（30 分钟缓存，失败回退到 `gh-proxy.com`）
+- 仪表板版本徽章自动比对 semver，发现新版变橙 + 🆙
+- 「立即升级」 → 服务器写一条 bootstrap 脚本，detach 后通过 `setsid` 运行 `install.sh`，整个 `procd` 服务自我停-换-启
+- `Cache-Control: no-cache` + ETag 保证升级后页面不读到旧 HTML
+
+### 13. 数据备份与恢复（`/api/backup/*`）
+- `GET /api/backup/export` 流式打包整个 `-data-dir` 为 `tar.gz`，含 `manifest.json` (`format` / `format_version` / `exported_at` / `exporter_hostname`)
+- `POST /api/backup/import` 接收 multipart 上传：先校验 manifest 与 `format == argus-app-backup`、再两步 rename 原子替换 (失败时自动回滚, 成功后立即清理 .bak)
+- 防 zip-slip: 拒绝绝对路径 / `..` / 异常文件类型 (symlink/device/socket); 限 32 MiB 上传 / 16 MiB 单文件 / 100 MiB 解压总量
+- 可选「同时恢复账户/凭据」：默认勾选，取消则跳过 `credentials.json` + `notifications.json` 并从 live 目录复制保留
+- 凭据被替换时自动 `RevokeAll()` 全员重新登录, 避免 session/hash 不匹配
+
 ---
 
 ## Web UI 功能
@@ -410,8 +446,12 @@ argus-app/
 - 下方实时显示 res 主题最近 100 条消息（标题 + 内容）
 
 ### 顶部全局按钮
-- **重启网络服务**（5–15 秒瞬断、保留配置）
-- **重启路由器**（30–60 秒断网，二次确认）
+- **版本徽章**：显示当前 `v0.1.x`，发现新版会变橙 + 🆙 提示。点击弹版本 modal，可查看 release notes 并触发 「立即升级」。
+- **⚙ 设置**：统一入口，4 个区块：
+  - **全局通知 Webhook** —— 任何设备 ONLINE/OFFLINE 都额外推送到这里
+  - **账户** —— 修改密码 / 退出登录
+  - **系统** —— 重启网络服务（5–15 秒瞬断、保留配置）/ 重启路由器（30–60 秒断网、二次确认）
+  - **备份与恢复** —— 一键导出整个 `/etc/argus-app` 为 `tar.gz`，一键导入恢复（导入二级确认: 是否恢复账户/凭据）
 
 ---
 
@@ -450,8 +490,10 @@ GO_BIN=/usr/local/go/bin/go \
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `-listen` | `""`（关闭 Web UI） | Web 监听地址，例 `0.0.0.0:9099` |
+| `-data-dir` | `/etc/argus-app` | 数据根目录，`/api/backup/export\|import` 以此为源 |
+| `-credentials` | `/etc/argus-app/credentials.json` | 登录凭据（bcrypt 哈希 + 用户名）；置空禁用登录 |
 | `-aliases` | `/etc/argus-app/aliases.json` | MAC 别名存储 |
-| `-settings` | `/etc/argus-app/settings.json` | 打卡设备 + 标准工时 |
+| `-settings` | `/etc/argus-app/settings.json` | 打卡设备 + 标准工时 + 全局 Webhook |
 | `-overrides` | `/etc/argus-app/overrides.json` | 手动工时覆写（按月嵌套） |
 | `-notifications` | `/etc/argus-app/notifications.json` | Webhook / ntfy 配置 |
 | `-holidays` | `/etc/argus-app/holidays.json` | 用户手动节假日（不被自动刷新触碰） |
@@ -478,7 +520,14 @@ GO_BIN=/usr/local/go/bin/go \
 
 | 路径 | 方法 | 用途 |
 |---|---|---|
-| `/` | GET | 嵌入式仪表板 |
+| `/` | GET | 嵌入式仪表板（未登录跳 `/login`） |
+| `/login` | GET | 登录页 |
+| `/api/login` | POST | 用户名/密码 → 写 session cookie |
+| `/api/logout` | POST | 销毁当前 session |
+| `/api/password` | POST | 修改密码（要求当前密码 + 新密码）；成功后 RevokeAll |
+| `/api/version` | GET | 当前二进制版本（version / commit / date / upgrade_open） |
+| `/api/version/check` | GET | 探测 GitHub Releases 最新版（`?force=1` 跳缓存） |
+| `/api/upgrade` | POST | 触发自升级，可选 `{"version":"vX.Y.Z"}` 否则取 latest |
 | `/api/devices` | GET | 当前设备 + 离线缓存 |
 | `/api/events` | GET (SSE) | 上下线 / Change 事件流 |
 | `/api/aliases` | GET / POST / DELETE | MAC 别名增删改查 |
@@ -487,15 +536,17 @@ GO_BIN=/usr/local/go/bin/go \
 | `/api/worktime` | GET | 单日工时报告 |
 | `/api/worktime/month` | GET | 月度工时报告 |
 | `/api/worktime/override` | GET / POST / DELETE | 手动覆写 |
-| `/api/settings` | GET / POST / DELETE | 打卡设备列表 + 标准工时 |
+| `/api/settings` | GET / POST / DELETE | 打卡设备 + 标准工时 + 全局 Webhook |
 | `/api/holidays` | GET / POST / DELETE | 合并视图（手动 + 系统）|
-| `/api/notifications` | GET / POST / DELETE | 通知配置 |
+| `/api/notifications` | GET / POST / DELETE | 每设备 Webhook / ntfy 配置 |
 | `/api/notifications/messages` | GET | res 主题最近消息 |
 | `/api/notifications/test` | POST | 触发一次合成事件用于调试 |
+| `/api/backup/export` | GET | 流式下载 `/etc/argus-app` 全量备份 (`tar.gz`) |
+| `/api/backup/import` | POST | multipart 上传备份并恢复，可选 `restore_credentials` |
 | `/api/system/reboot` | POST | 重启路由器 |
 | `/api/system/restart-network` | POST | 重启网络服务 |
 
-写操作（POST / DELETE）默认仅允许 RFC1918 私网调用方。
+除 `/login` / `/api/login` / `/favicon.ico` 外的所有路由均要求有效 session cookie；写操作（POST / DELETE）目前不再做 LAN 来源限制，由登录闸刀负责身份验证。
 
 ---
 
