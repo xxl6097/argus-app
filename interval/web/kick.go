@@ -2,17 +2,28 @@
 //
 // Disconnects a single WiFi station so the client has to re-associate
 // (and, depending on platform, fall back to mobile data or cycle Wi-Fi).
-// Reuses the same staKickCmds + wifiRestartCmds tables that DHCP set
-// uses internally — there's no second source of truth for "how to
-// kick a station on this firmware".
+//
+// Kick chain (best-effort, multiple commands may fire):
+//
+//   1. `ubus call ahsapd.roaming staDisconnect` — vendor band-steering
+//      hint. Exits 0 on most MTK firmwares but is ONLY a hint, not a
+//      real deauth. We still call it because on some images it actually
+//      works, and on the rest it's a no-op (exit 0, no error).
+//
+//   2. `iwpriv <ra*|rax*> set DisConnectSta=<MAC>` — MTK proprietary
+//      kick. Iterates every active ra*/rax* VAP because we don't know
+//      which band the station is on. Verified working on MTK7981
+//      (clife, OpenWrt 21.02-SNAPSHOT vendor build): produces "无线断开"
+//      + "MAC表移除" syslog within ~1s.
+//
+//   3. (optional, restart_wifi=true) `wifi reload` / `/etc/init.d/ahsapd
+//      restart` — nuclear, drops every client on every radio for a few
+//      seconds. Only as a last resort when none of the surgical paths
+//      moved the needle.
 //
 // Wired devices are rejected up-front: deauth has no analogue on
 // Ethernet, and shutting down a switch port for a single MAC isn't
 // something we want to do casually from the dashboard.
-//
-// The "nuclear" wifi-restart fallback (restart_wifi=true) drops every
-// WiFi client on every radio for a few seconds; it's only worth firing
-// when per-station kick is a silent no-op on this firmware.
 
 package web
 
@@ -20,20 +31,22 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
 
-// kickStation runs the surgical per-station deauth chain (staKickCmds)
-// and, when restartWiFi is true, the nuclear wifi-restart chain too.
-// Each command in the chain is tried in order; the first that exits 0
-// wins (the rest are skipped). Returns a small report describing what
-// actually fired so the UI can echo it back.
+// kickStation runs the per-station deauth chain (ahsapd hint + iwpriv
+// fan-out) and, when restartWiFi is true, the nuclear wifi-restart
+// chain too. Returns a small report describing what fired so the UI
+// can echo it back.
 func kickStation(ctx context.Context, mac string, restartWiFi bool) kickReport {
 	var rep kickReport
 
-	// 1. Per-station kick (surgical).
+	// 1. Vendor band-steering hint (no-op on most firmwares but cheap to try).
 	for _, tmpl := range staKickCmds {
 		if len(tmpl) == 0 {
 			continue
@@ -50,12 +63,32 @@ func kickStation(ctx context.Context, mac string, restartWiFi bool) kickReport {
 		_, err := cmd.CombinedOutput()
 		cancel()
 		if err == nil {
-			rep.Kicked = argv[0] + " " + argv[1] // e.g. "ubus call ahsapd.roaming staDisconnect"
+			rep.Kicked = argv[0] + " " + argv[1]
 			break
 		}
 	}
 
-	// 2. Optional wifi-restart (everyone disconnects briefly).
+	// 2. MTK iwpriv DisConnectSta — the actual deauth on Ralink/MediaTek
+	//    vendor firmwares. We don't know which VAP the client is on,
+	//    so we fan out across every active ra*/rax* interface. Each call
+	//    is fast (~50ms) and harmless if the station isn't on that VAP.
+	if _, err := exec.LookPath("iwpriv"); err == nil {
+		for _, iface := range listMTKWiFiVAPs() {
+			ctxI, cancel := context.WithTimeout(ctx, 2*time.Second)
+			cmd := exec.CommandContext(ctxI, "iwpriv", iface, "set", "DisConnectSta="+mac)
+			_, err := cmd.CombinedOutput()
+			cancel()
+			if err == nil {
+				if rep.IwprivKicked == "" {
+					rep.IwprivKicked = iface
+				} else {
+					rep.IwprivKicked += "," + iface
+				}
+			}
+		}
+	}
+
+	// 3. Optional wifi-restart (everyone disconnects briefly).
 	if restartWiFi {
 		for _, argv := range wifiRestartCmds {
 			if len(argv) == 0 {
@@ -77,8 +110,44 @@ func kickStation(ctx context.Context, mac string, restartWiFi bool) kickReport {
 	return rep
 }
 
+// listMTKWiFiVAPs returns names of /sys/class/net interfaces that
+// match Ralink/MediaTek WiFi VAP naming (ra* / rax*) AND have a
+// non-zero MAC (zero MAC = inactive / unconfigured VAP).
+//
+// Stable order (sort.Strings) so log output is reproducible.
+func listMTKWiFiVAPs() []string {
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return nil
+	}
+	var ifaces []string
+	for _, e := range entries {
+		name := e.Name()
+		if !(strings.HasPrefix(name, "ra") && len(name) >= 3) {
+			continue
+		}
+		// "ra0", "ra1", ... or "rax0", "rax1", ...
+		// Filter out zero-MAC entries (inactive VAPs).
+		addr, err := os.ReadFile(filepath.Join("/sys/class/net", name, "address"))
+		if err != nil {
+			continue
+		}
+		mac := strings.TrimSpace(string(addr))
+		if mac == "" || mac == "00:00:00:00:00:00" {
+			continue
+		}
+		ifaces = append(ifaces, name)
+	}
+	sort.Strings(ifaces)
+	return ifaces
+}
+
 type kickReport struct {
+	// Kicked is whichever staKickCmds entry succeeded (vendor hint).
+	// Often present even when the station didn't actually drop —
+	// IwprivKicked is the more authoritative "really deauth'd" signal.
 	Kicked        string `json:"kicked,omitempty"`
+	IwprivKicked  string `json:"iwpriv_kicked,omitempty"`  // comma-separated VAPs that accepted DisConnectSta
 	WiFiRestarted string `json:"wifi_restarted,omitempty"`
 }
 
@@ -88,15 +157,10 @@ type kickReport struct {
 //	  { "mac": "AA:BB:CC:DD:EE:FF",
 //	    "restart_wifi": false }    // optional nuclear fallback
 //
-//	→ 200 {"ok":true,"kicked":"...","wifi_restarted":"..."}
-//	  202 ok=true with empty kicked/wifi_restarted means no command
-//	      was available on this host — surfaced to the user as
-//	      "踢下线指令已尝试, 但未找到可用方法".
-//
-// Refuses requests for wired devices (we don't currently know the
-// switch port and don't want to disable interfaces blindly). Uses
-// the offline cache to look up Wired status when the device is no
-// longer in the watcher's known set.
+//	→ 200 {"ok":true,"kicked":"...","iwpriv_kicked":"rax0","wifi_restarted":""}
+//	  Empty `kicked` + `iwpriv_kicked` means no command was available
+//	  on this host — surfaced to the user as "踢下线指令已尝试, 但未
+//	  找到可用方法".
 func (s *Server) handleDeviceKick(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
@@ -145,6 +209,7 @@ func (s *Server) handleDeviceKick(w http.ResponseWriter, r *http.Request) {
 		"ok":             true,
 		"mac":            strings.ToUpper(mac),
 		"kicked":         rep.Kicked,
+		"iwpriv_kicked":  rep.IwprivKicked,
 		"wifi_restarted": rep.WiFiRestarted,
 	})
 }
