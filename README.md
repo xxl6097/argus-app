@@ -282,16 +282,26 @@ rm -rf /etc/argus-app
 argus-app/
 ├── cmd/app/main.go                  # 入口 + 命令行参数
 ├── interval/web/
-│   ├── server.go                    # HTTP / SSE / 路由总线
+│   ├── server.go                    # Options / Server struct / NewServer / 路由注册
+│   ├── auth.go                      # cookie session 中间件 + 登录/退出/改密 + LAN 鉴权谓词
+│   ├── events.go                    # OnEvent / OnSyslog / SSE 流 / 离线缓存
+│   ├── devices.go                   # / + /favicon + /api/devices + capabilities
+│   ├── handlers_aliases.go          # /api/aliases CRUD
+│   ├── handlers_settings.go         # /api/settings + /api/holidays
+│   ├── handlers_worktime.go         # /api/history + /api/worktime{,/month,/override}
+│   ├── handlers_notify.go           # /api/notifications{,/test,/messages}
+│   ├── handlers_version.go          # /api/version{,/check} + /api/upgrade
+│   ├── notify_dispatch.go           # dispatchNotify + 打卡分类 + 自动写下班时间
+│   ├── kick.go                      # /api/devices/kick (踢下线)
 │   ├── credentials.go               # bcrypt 登录凭据 + session 存储
 │   ├── version.go                   # GitHub Releases 探测 + 自升级触发
-│   ├── backup.go                    # /etc/argus-app 数据目录 tar.gz 打包/解包
+│   ├── backup.go                    # /etc/argus-app tar.gz 打包/解包
 │   ├── backup_handlers.go           # /api/backup/export | /api/backup/import
 │   ├── aliases.go                   # MAC → 友好名 持久化
 │   ├── dhcp.go                      # OpenWrt uci 静态 IP 管理
 │   ├── system.go                    # 重启网络 / 重启路由器
 │   ├── history.go                   # 上下线历史 + 工时计算核心
-│   ├── settings.go                  # 打卡设备 + 标准工时 + 全局 Webhook
+│   ├── settings.go                  # 打卡设备 + 标准工时 + 全局 Webhook + 钉钉关键词
 │   ├── overrides.go                 # 按月嵌套的 (alias, date) 手动工时覆写
 │   ├── holidays.go                  # 双层节假日存储 + timor.tech 自动拉取
 │   ├── notify.go                    # 每设备 Webhook + ntfy 推送 / 订阅
@@ -364,6 +374,7 @@ argus-app/
 - 当系统漏检（路由器宕机、忘带手机）时手动补录某天的上班/下班时间
 - 文件按月嵌套：`{alias: {YYYY-MM: {YYYY-MM-DD: {in, out}}}}`
 - 兼容旧扁平结构，启动时自动迁移
+- **下班时间自动落盘**：打卡设备在 `work_end` 之后每次离线都把 `out` 字段写到当日记录（last-write-wins）。已有的 `in`（用户手动补录）保留不动。这样工时报告反映真实下班时间，而且数据不受 `history/` 30 天保留期影响。
 
 ### 8. 节假日双层存储 (`holidays.json` + `holidays_system.json`)
 - **手动层**（`holidays.json`）：UI 中「设为工作日 / 设为加班日 / 设为节假日 / 恢复默认」
@@ -386,7 +397,22 @@ argus-app/
 - 普通设备 → 「【alias】上线啦 / 下线啦」+ 设备 / IP / MAC / 时间
 
 ### 10. 全局 Webhook（`settings.json`）
-独立于每设备 webhook 的「**全屋总线**」：在 ⚙ 设置中填一条 URL，**任何**设备的 ONLINE/OFFLINE 都额外推一份过去；payload 多带一个 `scope` 字段（`"global"` vs `"device"`），方便消费端区分两种来源、避免重复处理。每设备 webhook + 全局 webhook 同时生效, 互不替代。
+
+独立于每设备 webhook 的「**全屋总线**」：在 ⚙ 设置中填一条 URL，所有**已配置 per-device 通知**的设备的 ONLINE/OFFLINE 会额外推一份过去；payload 多带一个 `scope` 字段（`"global"` vs `"device"`），方便消费端区分两种来源、避免重复处理。每设备 webhook + 全局 webhook 同时生效, 互不替代。
+
+**Opt-in 闸刀**：只有"在设备详情 → 信息设置中配过 webhook 或 ntfy"的设备会走 webhook 派发。没配 per-device 通知的 MAC（路过的邻居手机、智能灯泡等）一律静默，避免群里被刷屏。
+
+**打卡设备智能去抖**（v0.1.21+）：打卡设备一天内会反复 ONLINE/OFFLINE（午饭、WiFi 抖动），这些瞬态事件按以下规则路由：
+
+| 场景 | 全局 Webhook | 每设备 Webhook | 消息体 |
+|---|---|---|---|
+| 当天首次 ONLINE（真签到） | ✅ | ✅ | 上班了 + 工时 |
+| OFFLINE ≥ `work_end`（真下班） | ✅ | ✅ | 下班了 + 工时 |
+| 当天再次 ONLINE（午休回来） | ✅ | ❌ | 上线啦（轻量） |
+| OFFLINE < `work_end`（午饭出门 / 抖动） | ✅ | ❌ | 下线啦（轻量） |
+| 普通设备（非打卡） | 走 per-device 通道，无去抖 | | |
+
+**钉钉/飞书关键词字段**：⚙ 设置里可填一条「钉钉关键词」，会自动追加到每条 webhook markdown 的标题和正文末尾，用于通过群机器人的「自定义关键词」安全策略（否则 dingtalk 会以 `errcode 310000 关键词不匹配` 拒收）。留空 = 关闭。
 
 ### 11. Web UI 登录（`credentials.json`）
 - **bcrypt + cookie session**：首次启动播种 `admin / admin` 并标记 `must_change`，登录后强制改密；密码不少于 6 位
@@ -407,6 +433,19 @@ argus-app/
 - 可选「同时恢复账户/凭据」：默认勾选，取消则跳过 `credentials.json` + `notifications.json` 并从 live 目录复制保留
 - 凭据被替换时自动 `RevokeAll()` 全员重新登录, 避免 session/hash 不匹配
 
+### 14. 设备踢下线（`/api/devices/kick`）
+
+设备列表每行（仅在线 + 非有线设备）会渲染一个红色 「踢下线」 徽章，二次确认后调 `POST /api/devices/kick {mac}` 强制断开 WiFi 关联。命令链 (best-effort，按顺序尝试):
+
+1. `ubus call ahsapd.roaming staDisconnect`（MTK 厂商 band-steering 提示，多数固件上是 noop 但便宜尝试）
+2. `iwpriv ra*/rax* set DisConnectSta=<MAC>`（**真正 deauth** 的命令——MTK7981 / clife 上验证过；自动遍历所有活跃 ra*/rax* VAP）
+3. 可选 `restart_wifi=true` 时再走 `wifi reload` / `/etc/init.d/ahsapd restart`（核选项，所有客户端瞬断几秒）
+
+后端校验:
+- MAC 必须是合法的 `aa:bb:cc:dd:ee:ff` 格式
+- 有线设备 (`wired:true`) 直接拒掉 — Ethernet 侧没有 deauth 类比
+- 设备一般 30 秒内自动重连（厂商 `dismissTime` 默认 30s）
+
 ---
 
 ## Web UI 功能
@@ -416,6 +455,7 @@ argus-app/
 ### 设备行（每行）
 - 状态徽章（在线 / 离线 + 离线时长）
 - MAC 字段右侧「**设为打卡 / 打卡设备**」徽章 — 点击即加入 / 移出打卡集合（可多选）
+- 仅在线 + 非有线设备额外渲染红色「**踢下线**」徽章 — 二次确认后强制 deauth, 设备会自动重连（厂商默认 dismissTime=30s）
 - 主机名 / 别名 + ✎ 内联重命名
 - IP 显示 + 🔒 静态租约标记 + 📌 设静态 IP 弹窗
 - 整行点击展开**详情面板**
@@ -529,6 +569,7 @@ GO_BIN=/usr/local/go/bin/go \
 | `/api/version/check` | GET | 探测 GitHub Releases 最新版（`?force=1` 跳缓存） |
 | `/api/upgrade` | POST | 触发自升级，可选 `{"version":"vX.Y.Z"}` 否则取 latest |
 | `/api/devices` | GET | 当前设备 + 离线缓存 |
+| `/api/devices/kick` | POST | 踢一台 WiFi 设备下线（deauth），可选 `restart_wifi=true` |
 | `/api/events` | GET (SSE) | 上下线 / Change 事件流 |
 | `/api/aliases` | GET / POST / DELETE | MAC 别名增删改查 |
 | `/api/dhcp` | GET / POST / DELETE | 静态 IP 租约 |
