@@ -436,6 +436,11 @@ func (s *Server) OnEvent(e argus.Event) {
 	if s.history != nil {
 		s.history.Record(e, s.sourceFor(e))
 	}
+	// For punch devices that go offline at/after WorkEnd, persist the
+	// last-seen time into overrides.json as the day's "out" — so the
+	// worktime report reflects the latest checkout even if the user
+	// hits the road and never comes back, and survives a reboot.
+	s.recordPunchCheckout(e)
 	// Dispatch to webhook/ntfy with rich markdown context. We do this
 	// here (not inside Notifier) because the context — alias, punch
 	// membership, worktime stats — lives in Server-level stores.
@@ -2216,6 +2221,63 @@ const (
 	// lightweight 上线啦/下线啦 body. Per-device is suppressed.
 	punchEventTransient
 )
+
+// recordPunchCheckout writes today's last OFFLINE-after-WorkEnd time
+// into overrides.json as the day's "out" for a punch device. Called
+// from OnEvent for every event; no-ops on:
+//   - non-OFFLINE events
+//   - non-punch devices
+//   - missing overrides / settings stores
+//   - OFFLINE before WorkEnd (we want to capture the *real* checkout,
+//     not lunch breaks)
+//
+// Last-write-wins semantics: every after-end OFFLINE overwrites the
+// previous "out". The existing "in" (manually entered or seeded by
+// a prior write) is preserved. If no override row exists yet for
+// today, a new one is created with only "out" set; the worktime
+// compute path treats missing "in" as "fall back to history".
+//
+// Why persist instead of just trusting history.jsonl? Two reasons:
+//   1. The /api/worktime month report uses overrides as authoritative
+//      when they exist. Writing a real checkout here means the daily
+//      report reflects the user's "I left at X" rather than the last
+//      probe seeing the device.
+//   2. History can be pruned (30-day retention); overrides are not.
+//      For long-term reporting, the override row is the durable
+//      record of "what time did this person leave today".
+func (s *Server) recordPunchCheckout(e argus.Event) {
+	if e.Kind != argus.EventOffline {
+		return
+	}
+	if s.overrides == nil || s.settings == nil {
+		return
+	}
+	mac := normalizeMAC(e.Device.MAC)
+	if mac == "" || !s.settings.IsPunch(mac) {
+		return
+	}
+	when := nonZeroTime(e.Time).In(time.Local)
+	cfg := s.settings.Get()
+	endSec, ok := parseClock(cfg.WorkEnd)
+	if !ok {
+		return
+	}
+	nowSec := when.Hour()*3600 + when.Minute()*60 + when.Second()
+	if nowSec < endSec {
+		return // before WorkEnd — lunch / transient drop, not a real checkout
+	}
+	dateKey := when.Format("2006-01-02")
+	outHHMM := when.Format("15:04")
+	// Preserve any existing "in" so we don't clobber a manual arrival
+	// entry the user filed earlier in the day.
+	o, _ := s.overrides.Lookup(mac, dateKey)
+	o.Out = outHHMM
+	if err := s.overrides.Set(mac, dateKey, o); err != nil {
+		// Non-fatal: log via stdlib's default logger. The store is
+		// best-effort here — failure shouldn't break the event flow.
+		fmt.Fprintf(os.Stderr, "recordPunchCheckout %s %s: %v\n", mac, dateKey, err)
+	}
+}
 
 // classifyPunchEvent decides how to route e for a punch device. See
 // punchEventClass docs for the four buckets. Returns punchEventNotPunch
