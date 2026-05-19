@@ -904,13 +904,24 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 
 // defaultLANAuth is the default predicate used when the user doesn't
 // override WithWriteAuth. It allows requests whose remote address is
-// loopback or an RFC1918 private network — appropriate for a dashboard
-// bound to a home LAN. X-Forwarded-For is NOT consulted: if you front
-// Argus with a reverse proxy, supply your own AuthCheck.
+// loopback or any of the well-known "private network" ranges in IPv4
+// (RFC1918) or IPv6 (ULA fc00::/7, link-local fe80::/10) — appropriate
+// for a dashboard bound to a home LAN. X-Forwarded-For is NOT
+// consulted: if you front Argus with a reverse proxy, supply your own
+// AuthCheck.
+//
+// IPv6 dual-stack note: when argus-app binds [::]:9099 modern clients
+// (browsers using Happy Eyeballs, mDNS-resolved hostnames, etc.) often
+// land on an IPv6 socket — so we MUST allow ULA and link-local, not
+// just RFC1918, or every browser request would 403.
 func defaultLANAuth(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
+	}
+	// Strip IPv6 zone (e.g. "fe80::1%br-lan").
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -919,7 +930,28 @@ func defaultLANAuth(r *http.Request) bool {
 	if ip.IsLoopback() {
 		return true
 	}
-	return isRFC1918(ip)
+	// Normalise IPv4-mapped IPv6 ("::ffff:192.168.x.y") so the RFC1918
+	// check below works on the embedded v4 octets.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.To4() != nil {
+		return isRFC1918(ip)
+	}
+	return isPrivateV6(ip)
+}
+
+// isPrivateV6 returns true for IPv6 addresses that should be treated
+// as "trusted LAN" — ULA (fc00::/7, includes fd00::/8) and link-local
+// (fe80::/10).
+func isPrivateV6(ip net.IP) bool {
+	if ip.IsLinkLocalUnicast() {
+		return true
+	}
+	// fc00::/7 — Unique Local Addresses (RFC 4193). Go's stdlib has
+	// IsPrivate() since 1.17 that covers this; use it instead of
+	// hand-rolling CIDR matching.
+	return ip.IsPrivate()
 }
 
 func isRFC1918(ip net.IP) bool {
