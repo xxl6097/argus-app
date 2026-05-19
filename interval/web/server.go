@@ -62,17 +62,27 @@ import (
 //go:embed assets/dashboard.html
 var dashboardHTML []byte
 
+//go:embed assets/app.css
+var appCSS []byte
+
+//go:embed assets/app.js
+var appJS []byte
+
 //go:embed assets/favicon.ico
 var faviconICO []byte
 
 //go:embed assets/login.html
 var loginHTML []byte
 
-// dashboardETag is computed once at process start from the embedded
-// HTML. It changes between releases (because the file content changes)
-// but is stable within a single binary's lifetime, so browsers cache
-// the page across navigations and only re-download after a redeploy.
-var dashboardETag = computeETag(dashboardHTML)
+// Per-asset ETags, computed once at process start. Each one is stable
+// within a binary's lifetime and changes only when that specific file
+// is rebuilt, so browsers re-download the file that actually changed
+// instead of all three on every release.
+var (
+	dashboardETag = computeETag(dashboardHTML)
+	appCSSETag    = computeETag(appCSS)
+	appJSETag     = computeETag(appJS)
+)
 
 func computeETag(b []byte) string {
 	sum := sha256.Sum256(b)
@@ -353,6 +363,12 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	// Favicon stays public — it's pulled by the browser before any
 	// auth happens, and serving it 401 just produces console noise.
 	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	// CSS / JS for the dashboard. Same logic as favicon — these are
+	// loaded by the dashboard.html itself before any cookie is checked
+	// in some browsers, and serving them 401 would also break the
+	// /login page if it grew styled assets.
+	s.mux.HandleFunc("/assets/app.css", s.handleAppCSS)
+	s.mux.HandleFunc("/assets/app.js", s.handleAppJS)
 
 	// Everything else goes through requireAuth. When creds == nil
 	// requireAuth is a pass-through, so the legacy "no login gate"

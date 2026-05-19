@@ -43,6 +43,35 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(faviconICO)
 }
 
+// handleAppCSS serves the embedded dashboard stylesheet. Same caching
+// posture as handleIndex: no-cache + ETag, so the browser keeps the
+// file but revalidates on every load — after a release the ETag
+// changes and the new CSS lands without a hard reload.
+func (s *Server) handleAppCSS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", appCSSETag)
+	if match := r.Header.Get("If-None-Match"); match != "" && match == appCSSETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(appCSS)
+}
+
+// handleAppJS serves the embedded dashboard script. Same posture as
+// handleAppCSS — no-cache + ETag — and is loaded with `defer` from
+// dashboard.html so it doesn't block initial paint.
+func (s *Server) handleAppJS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", appJSETag)
+	if match := r.Header.Get("If-None-Match"); match != "" && match == appJSETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(appJS)
+}
+
 // deviceRow is the wire format for /api/devices. Fields mirror the
 // stable JSON field names in STABILITY.md so consumers can script
 // against them.
