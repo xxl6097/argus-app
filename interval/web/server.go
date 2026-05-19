@@ -40,10 +40,11 @@ package web
 
 import (
 	"crypto/sha256"
-	_ "embed"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,8 +66,8 @@ var dashboardHTML []byte
 //go:embed assets/app.css
 var appCSS []byte
 
-//go:embed assets/app.js
-var appJS []byte
+//go:embed assets/app
+var appModulesFS embed.FS
 
 //go:embed assets/favicon.ico
 var faviconICO []byte
@@ -77,12 +78,40 @@ var loginHTML []byte
 // Per-asset ETags, computed once at process start. Each one is stable
 // within a binary's lifetime and changes only when that specific file
 // is rebuilt, so browsers re-download the file that actually changed
-// instead of all three on every release.
+// instead of all three on every release. JS modules under assets/app/
+// share a single ETag (app.js bundle ID): any release that rebuilds
+// the binary changes its sha256, but switching one module without
+// touching others is rare enough that finer-grained ETags aren't
+// worth the bookkeeping.
 var (
 	dashboardETag = computeETag(dashboardHTML)
 	appCSSETag    = computeETag(appCSS)
-	appJSETag     = computeETag(appJS)
+	appModulesETag = computeAppModulesETag()
 )
+
+// computeAppModulesETag walks the embedded app/ tree and produces a
+// single SHA256 across all JS bytes — same shape as computeETag.
+func computeAppModulesETag() string {
+	h := sha256.New()
+	entries, err := appModulesFS.ReadDir("assets/app")
+	if err != nil {
+		return `"app-unknown"`
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".js") {
+			continue
+		}
+		b, err := appModulesFS.ReadFile("assets/app/" + e.Name())
+		if err != nil {
+			continue
+		}
+		_, _ = h.Write([]byte(e.Name()))
+		_, _ = h.Write(b)
+	}
+	sum := h.Sum(nil)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
+}
+
 
 func computeETag(b []byte) string {
 	sum := sha256.Sum256(b)
@@ -368,7 +397,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	// in some browsers, and serving them 401 would also break the
 	// /login page if it grew styled assets.
 	s.mux.HandleFunc("/assets/app.css", s.handleAppCSS)
-	s.mux.HandleFunc("/assets/app.js", s.handleAppJS)
+	s.mux.HandleFunc("/assets/app/", s.handleAppModule)
 
 	// Everything else goes through requireAuth. When creds == nil
 	// requireAuth is a pass-through, so the legacy "no login gate"

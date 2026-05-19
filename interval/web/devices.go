@@ -58,18 +58,43 @@ func (s *Server) handleAppCSS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(appCSS)
 }
 
-// handleAppJS serves the embedded dashboard script. Same posture as
-// handleAppCSS — no-cache + ETag — and is loaded with `defer` from
-// dashboard.html so it doesn't block initial paint.
-func (s *Server) handleAppJS(w http.ResponseWriter, r *http.Request) {
+// handleAppModule serves any /assets/app/<name>.js from the embedded
+// app/ directory. Used by ES Module imports in /assets/app/main.js
+// (which is itself loaded with `<script type="module">` from
+// dashboard.html). All modules share a single ETag (the bundle's
+// rolled-up sha256) — re-deploying the binary invalidates them
+// together, which matches the rebuild-everything reality.
+func (s *Server) handleAppModule(w http.ResponseWriter, r *http.Request) {
+	// Strip "/assets/" prefix → "app/<name>.js"; reject anything else.
+	const prefix = "/assets/"
+	if !strings.HasPrefix(r.URL.Path, prefix+"app/") {
+		http.NotFound(w, r)
+		return
+	}
+	name := r.URL.Path[len(prefix):] // "app/foo.js"
+	// Reject path traversal — `embed.FS.ReadFile` does its own
+	// validation but err on the side of caution.
+	if strings.Contains(name, "..") || strings.Contains(name, "//") {
+		http.NotFound(w, r)
+		return
+	}
+	if !strings.HasSuffix(name, ".js") {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := appModulesFS.ReadFile("assets/" + name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("ETag", appJSETag)
-	if match := r.Header.Get("If-None-Match"); match != "" && match == appJSETag {
+	w.Header().Set("ETag", appModulesETag)
+	if match := r.Header.Get("If-None-Match"); match != "" && match == appModulesETag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	_, _ = w.Write(appJS)
+	_, _ = w.Write(body)
 }
 
 // deviceRow is the wire format for /api/devices. Fields mirror the
