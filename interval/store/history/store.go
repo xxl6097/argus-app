@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
-	"github.com/xxl6097/argus-app/interval/util"
 	"github.com/xxl6097/argus-app/interval/store/holidays"
 	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/util"
+	argus "github.com/xxl6097/argusd"
 )
 
 // Retention is how long per-MAC online/offline records are kept
@@ -618,4 +618,3 @@ func parseHHMM(v string) (int, bool) {
 	}
 	return secs / 60, true
 }
-

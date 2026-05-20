@@ -22,11 +22,11 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"github.com/xxl6097/argus-app/interval/store/credentials"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"github.com/xxl6097/argus-app/interval/store/credentials"
 )
 
 // defaultLANAuth1 keeps the previous "loopback or private network"

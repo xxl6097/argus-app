@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
 	"github.com/xxl6097/argus-app/interval/store/notify"
 	"github.com/xxl6097/argus-app/interval/util"
+	argus "github.com/xxl6097/argusd"
 )
 
 // handleNotifications multiplexes GET / POST / DELETE on

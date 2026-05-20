@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/xxl6097/argus-app/interval/owrt"
 	"context"
+	"errors"
+	"github.com/xxl6097/argus-app/interval/owrt"
 	"strings"
 	"time"
-	"errors"
 )
 
 func (s *Server) handleDHCP(w http.ResponseWriter, r *http.Request) {

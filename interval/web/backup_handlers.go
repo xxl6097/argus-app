@@ -3,18 +3,18 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/xxl6097/argus-app/interval/release"
 	"net/http"
 	"time"
-	"github.com/xxl6097/argus-app/interval/release"
 )
 
 // handleBackupExport streams a gzipped tar of the configured data
 // directory. Requires auth + writeAuth (the bundle includes secrets,
 // so even a "read-only" download is treated like a privileged op).
 //
-//   GET /api/backup/export
-//   → Content-Type: application/gzip
-//     Content-Disposition: attachment; filename="argus-app-backup-YYYYMMDD-HHMMSS.tar.gz"
+//	GET /api/backup/export
+//	→ Content-Type: application/gzip
+//	  Content-Disposition: attachment; filename="argus-app-backup-YYYYMMDD-HHMMSS.tar.gz"
 func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 	if s.dataDir == "" {
 		writeJSONErr(w, http.StatusServiceUnavailable, "backup disabled (data-dir not configured)")
@@ -54,14 +54,14 @@ func (s *Server) handleBackupExport(w http.ResponseWriter, r *http.Request) {
 // extracted contents, and reloads the in-memory stores. Requires
 // auth + writeAuth.
 //
-//   POST /api/backup/import
-//     multipart/form-data:
-//       file (required)               — the .tar.gz body
-//       restore_credentials (optional) — "true"/"false" (default true)
+//	POST /api/backup/import
+//	  multipart/form-data:
+//	    file (required)               — the .tar.gz body
+//	    restore_credentials (optional) — "true"/"false" (default true)
 //
-//   → 200 {"ok":true, "restored":[...], "skipped":[...],
-//          "backup_dir":"/etc/argus-app.bak.20260519-..."
-//          "session_revoked": true|false}
+//	→ 200 {"ok":true, "restored":[...], "skipped":[...],
+//	       "backup_dir":"/etc/argus-app.bak.20260519-..."
+//	       "session_revoked": true|false}
 func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 	if s.dataDir == "" {
 		writeJSONErr(w, http.StatusServiceUnavailable, "backup disabled (data-dir not configured)")

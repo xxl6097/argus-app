@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
-	"github.com/xxl6097/argus-app/interval/store/settings"
 	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/store/settings"
+	argus "github.com/xxl6097/argusd"
 )
 
 // classifyPunchEvent has four code paths:
@@ -21,7 +21,7 @@ import (
 // test gets an isolated store.
 
 const (
-	tcMac     = "aa:bb:cc:dd:ee:ff"
+	tcMac       = "aa:bb:cc:dd:ee:ff"
 	tcWorkStart = "09:00"
 	tcWorkEnd   = "18:30"
 )

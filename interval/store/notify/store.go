@@ -31,9 +31,9 @@ import (
 	"sync"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
-	"github.com/xxl6097/argus-app/interval/util"
 	"github.com/xxl6097/argus-app/interval/store/alias"
+	"github.com/xxl6097/argus-app/interval/util"
+	argus "github.com/xxl6097/argusd"
 )
 
 // NotifyConfig is the per-device notification setup. Empty fields

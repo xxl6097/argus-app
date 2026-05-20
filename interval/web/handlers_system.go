@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/xxl6097/argus-app/interval/owrt"
 	"context"
+	"github.com/xxl6097/argus-app/interval/owrt"
 	"os/exec"
 	"strings"
 	"time"
 )
-
 
 func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

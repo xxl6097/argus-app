@@ -145,7 +145,7 @@ type KickReport struct {
 	// Often present even when the station didn't actually drop —
 	// IwprivKicked is the more authoritative "really deauth'd" signal.
 	Kicked        string `json:"kicked,omitempty"`
-	IwprivKicked  string `json:"iwpriv_kicked,omitempty"`  // comma-separated VAPs that accepted DisConnectSta
+	IwprivKicked  string `json:"iwpriv_kicked,omitempty"` // comma-separated VAPs that accepted DisConnectSta
 	WiFiRestarted string `json:"wifi_restarted,omitempty"`
 }
 

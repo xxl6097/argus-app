@@ -25,11 +25,11 @@ import (
 	"strings"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
-	"github.com/xxl6097/argus-app/interval/store/override"
-	"github.com/xxl6097/argus-app/interval/store/notify"
 	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/override"
 	"github.com/xxl6097/argus-app/interval/util"
+	argus "github.com/xxl6097/argusd"
 )
 
 // chineseWeekdays maps Go's time.Weekday to Chinese day names.
@@ -256,13 +256,13 @@ const (
 // compute path treats missing "in" as "fall back to history".
 //
 // Why persist instead of just trusting history.jsonl? Two reasons:
-//   1. The /api/worktime month report uses overrides as authoritative
-//      when they exist. Writing a real checkout here means the daily
-//      report reflects the user's "I left at X" rather than the last
-//      probe seeing the device.
-//   2. History can be pruned (30-day retention); overrides are not.
-//      For long-term reporting, the override row is the durable
-//      record of "what time did this person leave today".
+//  1. The /api/worktime month report uses overrides as authoritative
+//     when they exist. Writing a real checkout here means the daily
+//     report reflects the user's "I left at X" rather than the last
+//     probe seeing the device.
+//  2. History can be pruned (30-day retention); overrides are not.
+//     For long-term reporting, the override row is the durable
+//     record of "what time did this person leave today".
 func (s *Server) recordPunchCheckout(e argus.Event) {
 	if e.Kind != argus.EventOffline {
 		return

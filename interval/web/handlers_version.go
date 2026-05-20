@@ -11,10 +11,10 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"github.com/xxl6097/argus-app/interval/release"
 	"net/http"
 	"strings"
 	"time"
-	"github.com/xxl6097/argus-app/interval/release"
 )
 
 // handleVersion returns the running binary's identity. Cheap, no

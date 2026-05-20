@@ -7,9 +7,9 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/xxl6097/argus-app/interval/util"
 	"net/http"
 	"strings"
-	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // handleAliases multiplexes GET / POST / DELETE on /api/aliases.

@@ -44,10 +44,10 @@ const (
 
 	// Hard caps on the import side. The export side has no caps because
 	// it runs against trusted local data.
-	MaxImportArchiveBytes  = int64(32 << 20)  // 32 MiB compressed upload
-	maxImportPerFileBytes  = int64(16 << 20)  // 16 MiB per entry uncompressed
-	maxImportTotalUncompr  = int64(100 << 20) // 100 MiB across all entries (zip-bomb guard)
-	maxImportEntries       = 4096             // file count guard
+	MaxImportArchiveBytes = int64(32 << 20)  // 32 MiB compressed upload
+	maxImportPerFileBytes = int64(16 << 20)  // 16 MiB per entry uncompressed
+	maxImportTotalUncompr = int64(100 << 20) // 100 MiB across all entries (zip-bomb guard)
+	maxImportEntries      = 4096             // file count guard
 )
 
 // BackupManifest is the small JSON written at the archive root.
@@ -55,12 +55,12 @@ const (
 // arbitrary tarball) and surfaced to the UI for "exported by host
 // X at time Y".
 type BackupManifest struct {
-	Format         string    `json:"format"`
-	FormatVersion  int       `json:"format_version"`
-	ExportedAt     time.Time `json:"exported_at"`
-	ExporterVer    string    `json:"exporter_version"`
-	ExporterHost   string    `json:"exporter_hostname"`
-	Files          []string  `json:"files"`
+	Format        string    `json:"format"`
+	FormatVersion int       `json:"format_version"`
+	ExportedAt    time.Time `json:"exported_at"`
+	ExporterVer   string    `json:"exporter_version"`
+	ExporterHost  string    `json:"exporter_hostname"`
+	Files         []string  `json:"files"`
 }
 
 // PackDataDir streams a gzipped tar of dataDir to w. Skips dotfiles,

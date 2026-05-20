@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
-	"github.com/xxl6097/argus-app/interval/store/settings"
 	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/store/settings"
+	argus "github.com/xxl6097/argusd"
 )
 
 // recordPunchCheckout has these branches:

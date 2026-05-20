@@ -761,4 +761,3 @@ func pruneLeaseFile(path, mac string) error {
 }
 
 // --- HTTP handlers (wired from Server.handleDHCP) ----------------------
-

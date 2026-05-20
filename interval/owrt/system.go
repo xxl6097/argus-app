@@ -14,8 +14,7 @@
 
 package owrt
 
-import (
-)
+import ()
 
 // Overridable so tests don't actually reboot or reload the host
 // running `go test`.

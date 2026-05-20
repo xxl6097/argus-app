@@ -1,11 +1,11 @@
 package history
 
 import (
-	"github.com/xxl6097/argus-app/interval/store/override"
 	"github.com/xxl6097/argus-app/interval/store/holidays"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/util"
 	"testing"
 	"time"
-	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // TestParseClock verifies the HH:MM / HH:MM:SS parser handles all

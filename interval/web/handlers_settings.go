@@ -10,9 +10,9 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/xxl6097/argus-app/interval/store/settings"
 	"net/http"
 	"strings"
-	"github.com/xxl6097/argus-app/interval/store/settings"
 )
 
 // handleSettings multiplexes GET / POST / DELETE on /api/settings.

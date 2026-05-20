@@ -84,8 +84,8 @@ var loginHTML []byte
 // touching others is rare enough that finer-grained ETags aren't
 // worth the bookkeeping.
 var (
-	dashboardETag = computeETag(dashboardHTML)
-	appCSSETag    = computeETag(appCSS)
+	dashboardETag  = computeETag(dashboardHTML)
+	appCSSETag     = computeETag(appCSS)
 	appModulesETag = computeAppModulesETag()
 )
 
@@ -111,7 +111,6 @@ func computeAppModulesETag() string {
 	sum := h.Sum(nil)
 	return `"` + hex.EncodeToString(sum[:8]) + `"`
 }
-
 
 func computeETag(b []byte) string {
 	sum := sha256.Sum256(b)

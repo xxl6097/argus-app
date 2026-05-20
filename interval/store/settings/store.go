@@ -3,13 +3,13 @@ package settings
 import (
 	"encoding/json"
 	"errors"
+	"github.com/xxl6097/argus-app/interval/util"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // Settings holds dashboard-level user preferences persisted to JSON.

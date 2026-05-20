@@ -3,12 +3,12 @@ package override
 import (
 	"encoding/json"
 	"errors"
+	"github.com/xxl6097/argus-app/interval/store/alias"
+	"github.com/xxl6097/argus-app/interval/util"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"github.com/xxl6097/argus-app/interval/util"
-	"github.com/xxl6097/argus-app/interval/store/alias"
 )
 
 // Override is a manual in/out record for (mac, date). Used when the

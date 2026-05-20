@@ -26,8 +26,8 @@ import (
 	"net/http"
 	"time"
 
-	argus "github.com/xxl6097/argusd"
 	"github.com/xxl6097/argus-app/interval/util"
+	argus "github.com/xxl6097/argusd"
 )
 
 // syslogHint is one direction-tagged syslog observation (connect side

@@ -7,11 +7,11 @@
 // returns immediately and the user is expected to refresh after
 // ~60s. State machine:
 //
-//   POST /api/upgrade  → write /tmp/argus-upgrade.sh, spawn detached
-//                         shell, return 200 to caller
-//   detached shell     → wget install.sh, exec with VERSION=<tag>,
-//                         install.sh does stop/swap/start
-//   procd              → respawns argus-app with the new binary
+//	POST /api/upgrade  → write /tmp/argus-upgrade.sh, spawn detached
+//	                      shell, return 200 to caller
+//	detached shell     → wget install.sh, exec with VERSION=<tag>,
+//	                      install.sh does stop/swap/start
+//	procd              → respawns argus-app with the new binary
 //
 // The upgrade script is detached via setsid so that it survives
 // argus-app's own death during the upgrade.
@@ -45,7 +45,7 @@ type LatestRelease struct {
 	TagName    string    `json:"tag_name"`
 	Name       string    `json:"name"`
 	HTMLURL    string    `json:"html_url"`
-	Body       string    `json:"body"`         // release notes (markdown)
+	Body       string    `json:"body"` // release notes (markdown)
 	Prerelease bool      `json:"prerelease"`
 	Draft      bool      `json:"draft"`
 	FetchedAt  time.Time `json:"fetched_at"`

@@ -10,12 +10,12 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/xxl6097/argus-app/interval/store/history"
+	"github.com/xxl6097/argus-app/interval/store/override"
+	"github.com/xxl6097/argus-app/interval/util"
 	"net/http"
 	"strings"
 	"time"
-	"github.com/xxl6097/argus-app/interval/store/override"
-	"github.com/xxl6097/argus-app/interval/store/history"
-	"github.com/xxl6097/argus-app/interval/util"
 )
 
 // handleHistory serves GET /api/history?mac=XX&from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -220,7 +220,7 @@ func (s *Server) handleWorktimeMonth(w http.ResponseWriter, r *http.Request) {
 			LastSeenMs:      dr.LastSeenMs,
 			ArrivalStatus:   dr.ArrivalStatus,
 			DepartureStatus: dr.DepartureStatus,
-			DayKind: dr.DayKind,
+			DayKind:         dr.DayKind,
 			OTDay:           dr.OTDay,
 			Manual:          dr.Manual,
 			MissingOut:      dr.MissingOut,
