@@ -5,7 +5,7 @@
 // listener self-removes when this pane leaves the DOM (user switches
 // tabs or collapses the row).
 
-import { esc, formatLocalDate, shiftDate } from "./state.js";
+import { esc, formatLocalDate, shiftDate, state } from "./state.js";
 
 // Map argusd's syslog event kind tags → Chinese labels for the
 // timeline pill. Kept in sync with historySyslogLabels in
@@ -49,9 +49,22 @@ export function historySourceLabel(src) {
 // Per-day history pane:
 //   ◀ [date] ▶ 今天   ← 左右键 / 点按钮切换日期
 // 服务端保留 30 天,可任意翻看。
+//
+// Top of pane also exposes the per-MAC "全局 webhook 推送" toggle —
+// adds/removes this MAC from settings.WebhookMACs. Read live so it
+// reflects edits made elsewhere on the same session.
 export async function renderHistoryPane(body, mac) {
   const today = formatLocalDate(new Date());
+  // Read current opt-in state from cached settings, lazy-fetch if missing.
+  let webhookOn = await isWebhookOn(mac);
   body.innerHTML =
+    '<div class="wt-controls h-toggle-row">' +
+    '<label class="h-webhook-label" title="开启后, 该设备的 ONLINE / OFFLINE 会推送到 ⚙ 设置 里配置的全局 Webhook URL。每设备 webhook (本 tab 下方的 ⚙ 信息设置) 仍独立工作。">' +
+      '<input type="checkbox" class="h-webhook-toggle"' + (webhookOn ? ' checked' : '') + '>' +
+      '<span>全局 webhook 推送</span>' +
+    '</label>' +
+    '<span class="h-webhook-msg wt-note"></span>' +
+    '</div>' +
     '<div class="wt-controls">' +
     '<label>日期 ' +
     '<button class="hdr-btn h-day-prev" title="上一天 (←)">◀</button>' +
@@ -65,6 +78,41 @@ export async function renderHistoryPane(body, mac) {
 
   const dayIn = body.querySelector(".h-day-in");
   const listWrap = body.querySelector(".h-list-wrap");
+  const toggle = body.querySelector(".h-webhook-toggle");
+  const toggleMsg = body.querySelector(".h-webhook-msg");
+
+  toggle.addEventListener("change", async () => {
+    const on = toggle.checked;
+    toggle.disabled = true;
+    toggleMsg.textContent = "保存中…";
+    toggleMsg.style.color = "var(--muted)";
+    try {
+      const r = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ webhook_mac: mac, webhook: on }),
+      });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        toggle.checked = !on; // revert
+        toggleMsg.textContent = "保存失败: " + (b.error || r.status);
+        toggleMsg.style.color = "var(--offline)";
+        return;
+      }
+      // Invalidate the cached settings snapshot so subsequent renders
+      // see the new webhook_macs list.
+      state.currentSettings = null;
+      toggleMsg.textContent = on ? "✓ 已加入全局推送" : "✓ 已移出全局推送";
+      toggleMsg.style.color = "var(--accent)";
+      setTimeout(() => { toggleMsg.textContent = ""; }, 2500);
+    } catch (e) {
+      toggle.checked = !on;
+      toggleMsg.textContent = "网络错误: " + e.message;
+      toggleMsg.style.color = "var(--offline)";
+    } finally {
+      toggle.disabled = false;
+    }
+  });
 
   async function load(day) {
     dayIn.value = day;
@@ -141,4 +189,20 @@ export async function renderHistoryPane(body, mac) {
   document.addEventListener("keydown", onKey);
 
   load(today);
+}
+
+// isWebhookOn reports whether mac is in settings.webhook_macs[].
+// Lazy-loads /api/settings into state.currentSettings on first call
+// (when no one else has populated it yet). MAC compare is upper-cased
+// because the server returns uppercase.
+async function isWebhookOn(mac) {
+  if (!state.currentSettings) {
+    try {
+      const r = await fetch("/api/settings", { cache: "no-store" });
+      if (r.ok) state.currentSettings = await r.json();
+    } catch (_) { /* best-effort */ }
+  }
+  const macs = (state.currentSettings && state.currentSettings.webhook_macs) || [];
+  const want = (mac || "").toUpperCase();
+  return macs.includes(want);
 }

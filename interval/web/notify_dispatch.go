@@ -138,12 +138,18 @@ func (s *Server) dispatchNotify(e argus.Event) {
 		keyword = s.settings.Get().WebhookKeyword
 	}
 
-	// "Opt-in" gate: only devices with a per-device notify entry are
-	// allowed to push *anything* — global webhook included. Without
-	// this, the global webhook would broadcast every transient
-	// MAC-table flap from random LAN clients (smart bulbs, neighbours'
-	// phones associating then leaving, etc.). The per-device entry
-	// IS the user's "I care about this device" signal.
+	// "Opt-in" gate, split into two independent decisions:
+	//
+	//   - global webhook fires when the device is in settings.WebhookMACs
+	//     (toggled from the per-device 上下线记录 tab). This used to piggy-
+	//     back on per-device notify config, but the user wanted a separate
+	//     switch — some devices want to be in the global activity log
+	//     without setting up a dedicated webhook themselves.
+	//
+	//   - per-device webhook + ntfy fires when notify config exists,
+	//     same as before.
+	//
+	// If neither gate opens, return early and skip both branches.
 	hasNotifyConfig := false
 	var deviceCfg notify.NotifyConfig
 	if s.notifyStore != nil {
@@ -152,13 +158,14 @@ func (s *Server) dispatchNotify(e argus.Event) {
 			deviceCfg = cfg
 		}
 	}
-	if !hasNotifyConfig {
-		return // device not opted in → neither global nor per-device fires
+	wantGlobal := s.settings != nil && s.settings.IsWebhook(mac)
+	if !wantGlobal && !hasNotifyConfig {
+		return // device opted into neither channel → silent
 	}
 
-	// 1) Global webhook (settings-level): fires only for opted-in
-	//    devices, gated above. Optional; skipped when not configured.
-	if s.settings != nil {
+	// 1) Global webhook (settings-level): fires only when the device is
+	//    in settings.WebhookMACs AND a global URL is configured.
+	if wantGlobal && s.settings != nil {
 		if gURL := s.settings.Get().GlobalWebhookURL; gURL != "" {
 			gp := s.formatNotifyMarkdown(e, when, displayName, mac, globalIsPunch, sourceText)
 			if source != "" {
@@ -174,9 +181,11 @@ func (s *Server) dispatchNotify(e argus.Event) {
 	}
 
 	// 2) Per-device webhook + ntfy: skipped for transient punch events
-	//    (so the user doesn't get spammed "上班了" 5x a day) but the
-	//    global webhook above already covered those.
+	//    AND when no per-device config exists.
 	if cls == punchEventTransient {
+		return
+	}
+	if !hasNotifyConfig {
 		return
 	}
 	dp := s.formatNotifyMarkdown(e, when, displayName, mac, deviceIsPunch, sourceText)

@@ -472,3 +472,10 @@
     .cards { display: block; }
     #events-list { max-height: none; overflow: visible; }
   }
+
+  /* History tab webhook opt-in toggle row */
+  .h-toggle-row .h-webhook-label { cursor: pointer; user-select: none; }
+  .h-toggle-row .h-webhook-label input[type=checkbox] {
+    margin: 0; accent-color: var(--accent); cursor: pointer;
+  }
+  .h-toggle-row .h-webhook-msg { font-size: 11px; }

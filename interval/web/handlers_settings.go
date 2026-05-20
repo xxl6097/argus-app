@@ -50,6 +50,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
 			"punch_macs":         s.settings.PunchMACsUpper(),
+			"webhook_macs":       s.settings.WebhookMACsUpper(),
 			"work_start":         cfg.WorkStart,
 			"work_end":           cfg.WorkEnd,
 			"global_webhook_url": cfg.GlobalWebhookURL,
@@ -63,6 +64,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			PunchMAC         *string `json:"punch_mac,omitempty"`
 			Punch            *bool   `json:"punch,omitempty"`
+			WebhookMAC       *string `json:"webhook_mac,omitempty"`
+			Webhook          *bool   `json:"webhook,omitempty"`
 			WorkStart        string  `json:"work_start,omitempty"`
 			WorkEnd          string  `json:"work_end,omitempty"`
 			GlobalWebhookURL *string `json:"global_webhook_url,omitempty"`
@@ -112,6 +115,25 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// Webhook opt-in toggle: same shape as punch but for the global
+		// webhook subscription set. Default add when `webhook` is omitted.
+		if in.WebhookMAC != nil && *in.WebhookMAC != "" {
+			add := true
+			if in.Webhook != nil {
+				add = *in.Webhook
+			}
+			if add {
+				if err := s.settings.AddWebhook(*in.WebhookMAC); err != nil {
+					writeJSONErr(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			} else {
+				if err := s.settings.RemoveWebhook(*in.WebhookMAC); err != nil {
+					writeJSONErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+		}
 		// Legacy me_mac: add to the set (don't replace existing).
 		if in.MeMAC != "" {
 			if err := s.settings.AddPunch(in.MeMAC); err != nil {
@@ -121,8 +143,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         true,
-			"punch_macs": s.settings.PunchMACsUpper(),
+			"ok":           true,
+			"punch_macs":   s.settings.PunchMACsUpper(),
+			"webhook_macs": s.settings.WebhookMACsUpper(),
 		})
 	case http.MethodDelete:
 		if !s.writeAuth(r) {

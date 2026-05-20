@@ -33,6 +33,11 @@ type Settings struct {
 	// + title) so dingtalk/feishu robots that have keyword filters
 	// configured will let the message through. Empty = no append.
 	WebhookKeyword string `json:"webhook_keyword,omitempty"`
+	// WebhookMACs is the per-device opt-in list for the global webhook.
+	// Only events from MACs in this set fire the global webhook URL —
+	// independent of whether the device has its own per-device notify
+	// config. Toggled from the per-device 上下线记录 tab.
+	WebhookMACs []string `json:"webhook_macs,omitempty"`
 }
 
 // Store is a tiny JSON-file-backed settings store, mirroring
@@ -108,6 +113,22 @@ func (s *Store) load() {
 	sort.Strings(merged)
 	d.PunchMACs = merged
 	d.MeMAC = "" // drop legacy
+	// Same normalisation pass for WebhookMACs (dedupe, lowercase, drop empties).
+	whSeen := make(map[string]struct{})
+	whMerged := make([]string, 0, len(d.WebhookMACs))
+	for _, m := range d.WebhookMACs {
+		m = util.NormalizeMAC(m)
+		if m == "" {
+			continue
+		}
+		if _, dup := whSeen[m]; dup {
+			continue
+		}
+		whSeen[m] = struct{}{}
+		whMerged = append(whMerged, m)
+	}
+	sort.Strings(whMerged)
+	d.WebhookMACs = whMerged
 	s.mu.Lock()
 	s.data = d
 	s.mu.Unlock()
@@ -121,6 +142,9 @@ func (s *Store) Get() Settings {
 	out := s.data
 	if len(s.data.PunchMACs) > 0 {
 		out.PunchMACs = append([]string(nil), s.data.PunchMACs...)
+	}
+	if len(s.data.WebhookMACs) > 0 {
+		out.WebhookMACs = append([]string(nil), s.data.WebhookMACs...)
 	}
 	return out
 }
@@ -229,6 +253,9 @@ func (s *Store) persistLocked() error {
 	if len(out.PunchMACs) == 0 {
 		out.PunchMACs = nil
 	}
+	if len(out.WebhookMACs) == 0 {
+		out.WebhookMACs = nil
+	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
@@ -279,6 +306,70 @@ func (s *Store) PunchMACsUpper() []string {
 	defer s.mu.RUnlock()
 	out := make([]string, len(s.data.PunchMACs))
 	for i, m := range s.data.PunchMACs {
+		out[i] = strings.ToUpper(m)
+	}
+	return out
+}
+
+// IsWebhook reports whether mac is opted into the global webhook.
+func (s *Store) IsWebhook(mac string) bool {
+	mac = util.NormalizeMAC(mac)
+	if mac == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.data.WebhookMACs {
+		if m == mac {
+			return true
+		}
+	}
+	return false
+}
+
+// AddWebhook adds mac to the global-webhook opt-in set. No-op if already present.
+func (s *Store) AddWebhook(mac string) error {
+	mac = util.NormalizeMAC(mac)
+	if mac == "" {
+		return errors.New("settings: webhook mac required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range s.data.WebhookMACs {
+		if m == mac {
+			return nil
+		}
+	}
+	s.data.WebhookMACs = append(s.data.WebhookMACs, mac)
+	sort.Strings(s.data.WebhookMACs)
+	return s.persistLocked()
+}
+
+// RemoveWebhook removes mac from the global-webhook opt-in set. No-op if absent.
+func (s *Store) RemoveWebhook(mac string) error {
+	mac = util.NormalizeMAC(mac)
+	if mac == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.data.WebhookMACs[:0]
+	for _, m := range s.data.WebhookMACs {
+		if m != mac {
+			out = append(out, m)
+		}
+	}
+	s.data.WebhookMACs = append([]string{}, out...)
+	return s.persistLocked()
+}
+
+// WebhookMACsUpper returns the global-webhook opt-in MACs as uppercase
+// strings for wire formats that prefer display case.
+func (s *Store) WebhookMACsUpper() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.data.WebhookMACs))
+	for i, m := range s.data.WebhookMACs {
 		out[i] = strings.ToUpper(m)
 	}
 	return out
