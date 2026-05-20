@@ -44,6 +44,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg := s.settings.Get()
+		brandTitle, brandSubtitle := s.settings.Brand()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		enc := json.NewEncoder(w)
@@ -55,6 +56,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"work_end":           cfg.WorkEnd,
 			"global_webhook_url": cfg.GlobalWebhookURL,
 			"webhook_keyword":    cfg.WebhookKeyword,
+			"brand_title":        brandTitle,
+			"brand_subtitle":     brandSubtitle,
 		})
 	case http.MethodPost:
 		if !s.writeAuth(r) {
@@ -70,6 +73,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			WorkEnd          string  `json:"work_end,omitempty"`
 			GlobalWebhookURL *string `json:"global_webhook_url,omitempty"`
 			WebhookKeyword   *string `json:"webhook_keyword,omitempty"`
+			BrandTitle       *string `json:"brand_title,omitempty"`
+			BrandSubtitle    *string `json:"brand_subtitle,omitempty"`
 			// Legacy alias: older clients posted {"me_mac": "AA:.."} to
 			// set the single punch device. Treat it as add-only.
 			MeMAC string `json:"me_mac,omitempty"`
@@ -92,6 +97,22 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.WebhookKeyword != nil {
 			if err := s.settings.SetWebhookKeyword(*in.WebhookKeyword); err != nil {
+				writeJSONErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		// Brand title/subtitle: applied as a pair so a partial POST
+		// (only one field present) preserves the other.
+		if in.BrandTitle != nil || in.BrandSubtitle != nil {
+			cur := s.settings.Get()
+			title, subtitle := cur.BrandTitle, cur.BrandSubtitle
+			if in.BrandTitle != nil {
+				title = *in.BrandTitle
+			}
+			if in.BrandSubtitle != nil {
+				subtitle = *in.BrandSubtitle
+			}
+			if err := s.settings.SetBranding(title, subtitle); err != nil {
 				writeJSONErr(w, http.StatusBadRequest, err.Error())
 				return
 			}

@@ -17,6 +17,10 @@ export function initSettings() {
   const inKeyword   = document.getElementById("set-webhook-keyword");
   const saveBtn     = document.getElementById("set-save-webhook");
   const saveMsg     = document.getElementById("set-save-msg");
+  const inBrandTitle    = document.getElementById("set-brand-title");
+  const inBrandSubtitle = document.getElementById("set-brand-subtitle");
+  const saveBrandBtn    = document.getElementById("set-save-brand");
+  const brandMsg        = document.getElementById("set-brand-msg");
   const closeBtn    = document.getElementById("set-close");
 
   function setMsg(text, kind) {
@@ -24,14 +28,23 @@ export function initSettings() {
     saveMsg.className = "set-msg" + (kind ? " " + kind : "");
   }
 
+  function setBrandMsg(text, kind) {
+    if (!brandMsg) return;
+    brandMsg.textContent = text || "";
+    brandMsg.className = "set-msg" + (kind ? " " + kind : "");
+  }
+
   async function loadGlobalWebhook() {
     setMsg("");
+    setBrandMsg("");
     try {
       const r = await fetch("/api/settings", { cache: "no-store" });
       if (r.ok) {
         const j = await r.json();
         inWebhook.value = j.global_webhook_url || "";
         if (inKeyword) inKeyword.value = j.webhook_keyword || "";
+        if (inBrandTitle)    inBrandTitle.value    = j.brand_title    || "";
+        if (inBrandSubtitle) inBrandSubtitle.value = j.brand_subtitle || "";
       }
     } catch (_) { /* best-effort */ }
   }
@@ -80,6 +93,38 @@ export function initSettings() {
       saveBtn.textContent = orig;
     }
   });
+
+  // Brand title / subtitle: full reload after save so the header,
+  // page <title>, and login page all reflect the new strings without
+  // a hard refresh from the user.
+  if (saveBrandBtn) {
+    saveBrandBtn.addEventListener("click", async () => {
+      const title    = inBrandTitle    ? inBrandTitle.value.trim()    : "";
+      const subtitle = inBrandSubtitle ? inBrandSubtitle.value.trim() : "";
+      saveBrandBtn.disabled = true;
+      const orig = saveBrandBtn.textContent;
+      saveBrandBtn.textContent = "保存中…";
+      try {
+        const r = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brand_title: title, brand_subtitle: subtitle }),
+        });
+        if (r.ok) {
+          setBrandMsg("✓ 已保存, 即将刷新…", "ok");
+          setTimeout(() => location.reload(), 600);
+        } else {
+          const b = await r.json().catch(() => ({}));
+          setBrandMsg("保存失败: " + (b.error || r.status), "err");
+        }
+      } catch (e) {
+        setBrandMsg("网络错误: " + e.message, "err");
+      } finally {
+        saveBrandBtn.disabled = false;
+        saveBrandBtn.textContent = orig;
+      }
+    });
+  }
 
   // Forward modal sub-buttons → existing hidden handlers.
   const forward = (modalId, hiddenId) => {

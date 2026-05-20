@@ -85,6 +85,7 @@ var loginHTML []byte
 // worth the bookkeeping.
 var (
 	dashboardETag  = computeETag(dashboardHTML)
+	loginETag      = computeETag(loginHTML)
 	appCSSETag     = computeETag(appCSS)
 	appModulesETag = computeAppModulesETag()
 )

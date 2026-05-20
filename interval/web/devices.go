@@ -25,14 +25,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	body, etag := s.brandedHTML(dashboardHTML, dashboardETag)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("ETag", dashboardETag)
-	if match := r.Header.Get("If-None-Match"); match != "" && match == dashboardETag {
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	_, _ = w.Write(dashboardHTML)
+	_, _ = w.Write(body)
 }
 
 // handleFavicon serves the embedded favicon. Stable across rebuilds,

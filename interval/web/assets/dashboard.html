@@ -98,6 +98,19 @@
     </section>
 
     <section class="set-sec">
+      <h4>应用名称</h4>
+      <div class="meta">显示在网页头部和登录页, 也是浏览器标签页标题。留空 = 恢复默认。</div>
+      <div class="row">
+        <input type="text" id="set-brand-title" placeholder="主标题 (留空恢复默认)" autocomplete="off" maxlength="64" style="flex:1;min-width:0;background:rgba(0,0,0,0.25);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:13px">
+      </div>
+      <div class="row">
+        <input type="text" id="set-brand-subtitle" placeholder="副标题 (留空恢复默认)" autocomplete="off" maxlength="64" style="flex:1;min-width:0;background:rgba(0,0,0,0.25);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:13px">
+        <button class="hdr-btn" id="set-save-brand">保存</button>
+      </div>
+      <span class="set-msg" id="set-brand-msg"></span>
+    </section>
+
+    <section class="set-sec">
       <h4>账户</h4>
       <div class="row">
         <button class="hdr-btn" id="set-passwd">🔑 修改密码</button>

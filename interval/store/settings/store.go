@@ -38,7 +38,18 @@ type Settings struct {
 	// independent of whether the device has its own per-device notify
 	// config. Toggled from the per-device 上下线记录 tab.
 	WebhookMACs []string `json:"webhook_macs,omitempty"`
+	// BrandTitle / BrandSubtitle replace the hard-coded "WiFi 考勤" /
+	// "工时统计" strings in the dashboard + login HTML and the page
+	// <title>. Empty falls back to DefaultBrandTitle / DefaultBrandSubtitle.
+	BrandTitle    string `json:"brand_title,omitempty"`
+	BrandSubtitle string `json:"brand_subtitle,omitempty"`
 }
+
+// Default branding strings used when the user hasn't customised them.
+const (
+	DefaultBrandTitle    = "WiFi 考勤"
+	DefaultBrandSubtitle = "工时统计"
+)
 
 // Store is a tiny JSON-file-backed settings store, mirroring
 // the atomic-write pattern from AliasStore. Zero-dep by policy.
@@ -297,6 +308,42 @@ func (s *Store) SetWebhookKeyword(raw string) error {
 	defer s.mu.Unlock()
 	s.data.WebhookKeyword = raw
 	return s.persistLocked()
+}
+
+// SetBranding updates the dashboard's brand title/subtitle. Either or
+// both may be set in one call. Empty value resets the field, which
+// causes [Brand] to fall back to the defaults. Length capped at 64
+// per field so the page header stays presentable.
+func (s *Store) SetBranding(title, subtitle string) error {
+	title = strings.TrimSpace(title)
+	subtitle = strings.TrimSpace(subtitle)
+	if len(title) > 64 {
+		return errors.New("settings: brand_title too long (max 64 chars)")
+	}
+	if len(subtitle) > 64 {
+		return errors.New("settings: brand_subtitle too long (max 64 chars)")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.BrandTitle = title
+	s.data.BrandSubtitle = subtitle
+	return s.persistLocked()
+}
+
+// Brand returns the effective branding pair, applying defaults when a
+// field is empty. Always usable directly in templates.
+func (s *Store) Brand() (title, subtitle string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	title = s.data.BrandTitle
+	subtitle = s.data.BrandSubtitle
+	if title == "" {
+		title = DefaultBrandTitle
+	}
+	if subtitle == "" {
+		subtitle = DefaultBrandSubtitle
+	}
+	return
 }
 
 // PunchMACsUpper returns the 打卡设备 MACs as uppercase strings for
