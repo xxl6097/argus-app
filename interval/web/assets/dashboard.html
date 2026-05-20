@@ -126,6 +126,17 @@
       </div>
     </section>
 
+    <section class="set-sec" id="set-openid-sec" style="display:none">
+      <h4>OpenID 免登录白名单</h4>
+      <div class="meta">在白名单内的 OpenID 可以通过 <code>/api/login/openid</code> 直接拿到 admin 会话, 用于扫码 / 微信引导式登录。OpenID 即凭据, 请妥善保管。</div>
+      <div class="row">
+        <input type="text" id="set-openid-input" placeholder="输入 OpenID 后回车或点击添加" autocomplete="off" maxlength="128" style="flex:1;min-width:0;background:rgba(0,0,0,0.25);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:13px">
+        <button class="hdr-btn" id="set-openid-add">添加</button>
+      </div>
+      <ul id="set-openid-list" class="set-openid-list" style="margin:6px 0 0;padding:0;list-style:none;font-size:12px;max-height:160px;overflow:auto"></ul>
+      <span class="set-msg" id="set-openid-msg"></span>
+    </section>
+
     <section class="set-sec">
       <h4>备份与恢复</h4>
       <div class="meta">导出 /etc/argus-app 全部数据。包含管理员密码哈希和 webhook 凭据, 请妥善保管。导入会替换当前数据目录。</div>

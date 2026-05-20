@@ -2,12 +2,17 @@
 //
 // The modal opens on "btn-settings" click and exposes:
 //   - global webhook URL + dingtalk keyword (POST /api/settings)
+//   - app branding (POST /api/settings + reload)
 //   - account: forward clicks to hidden btn-passwd / btn-logout
 //   - system: forward clicks to hidden btn-restart-net / btn-reboot
+//   - openid whitelist (POST /api/openids; section hidden when caps.openids
+//     reports false — i.e. credentials disabled or store not attached)
 //   - backup: download tar.gz / upload + import (with import confirm modal)
 //
 // Hidden DOM buttons are wired in auth.js (passwd/logout) and system.js
 // (reboot/restart-net) — this module is purely the settings-modal UX.
+
+import { state, esc } from "./state.js";
 
 export function initSettings() {
   const settingsBtn = document.getElementById("btn-settings");
@@ -52,6 +57,7 @@ export function initSettings() {
   function openModal() {
     sm.classList.add("show");
     loadGlobalWebhook();
+    loadOpenIDs();
   }
   function closeModal() {
     sm.classList.remove("show");
@@ -226,6 +232,112 @@ export function initSettings() {
     } finally {
       imConfirm.disabled = false;
       imConfirm.textContent = orig;
+    }
+  });
+
+  // ---- OpenID 免登录白名单 ----
+  // Section visibility is keyed off caps.openids so binaries built without
+  // the openid store (or with credentials disabled) silently hide it.
+  const oidSec   = document.getElementById("set-openid-sec");
+  const oidIn    = document.getElementById("set-openid-input");
+  const oidAdd   = document.getElementById("set-openid-add");
+  const oidList  = document.getElementById("set-openid-list");
+  const oidMsg   = document.getElementById("set-openid-msg");
+
+  function setOidMsg(text, kind) {
+    if (!oidMsg) return;
+    oidMsg.textContent = text || "";
+    oidMsg.className = "set-msg" + (kind ? " " + kind : "");
+  }
+
+  function renderOpenIDs(list) {
+    if (!oidList) return;
+    if (!list || list.length === 0) {
+      oidList.innerHTML = '<li style="color:var(--muted);padding:6px 0">白名单为空</li>';
+      return;
+    }
+    oidList.innerHTML = list.map(oid =>
+      '<li style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">' +
+        '<code style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(oid) + '">' + esc(oid) + '</code>' +
+        '<button class="hdr-btn" data-oid-del="' + esc(oid) + '" style="padding:2px 8px;font-size:12px">删除</button>' +
+      '</li>'
+    ).join("");
+  }
+
+  async function loadOpenIDs() {
+    if (!oidSec) return;
+    // caps may not have arrived yet on the very first modal open; in that
+    // case fall back to probing /api/openids and treating 503 as "feature off".
+    if (state.caps && state.caps.openids === false) {
+      oidSec.style.display = "none";
+      return;
+    }
+    setOidMsg("");
+    try {
+      const r = await fetch("/api/openids", { cache: "no-store" });
+      if (r.status === 503) {
+        oidSec.style.display = "none";
+        return;
+      }
+      if (!r.ok) {
+        oidSec.style.display = "";
+        setOidMsg("加载失败: " + r.status, "err");
+        return;
+      }
+      const j = await r.json();
+      oidSec.style.display = "";
+      renderOpenIDs(j.openids || []);
+    } catch (e) {
+      setOidMsg("网络错误: " + e.message, "err");
+    }
+  }
+
+  async function addOpenID() {
+    if (!oidIn) return;
+    const v = oidIn.value.trim();
+    if (!v) { setOidMsg("请输入 OpenID", "err"); return; }
+    oidAdd.disabled = true;
+    try {
+      const r = await fetch("/api/openids", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ openid: v }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setOidMsg("添加失败: " + (b.error || r.status), "err");
+        return;
+      }
+      oidIn.value = "";
+      renderOpenIDs(b.openids || []);
+      setOidMsg("✓ 已添加", "ok");
+    } catch (e) {
+      setOidMsg("网络错误: " + e.message, "err");
+    } finally {
+      oidAdd.disabled = false;
+    }
+  }
+
+  if (oidAdd) oidAdd.addEventListener("click", addOpenID);
+  if (oidIn)  oidIn.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); addOpenID(); }
+  });
+  if (oidList) oidList.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-oid-del]");
+    if (!btn) return;
+    const oid = btn.getAttribute("data-oid-del");
+    if (!confirm('确定删除 OpenID "' + oid + '"?\n该用户将无法再免登录。')) return;
+    try {
+      const r = await fetch("/api/openids?openid=" + encodeURIComponent(oid), { method: "DELETE" });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setOidMsg("删除失败: " + (b.error || r.status), "err");
+        return;
+      }
+      renderOpenIDs(b.openids || []);
+      setOidMsg("✓ 已删除", "ok");
+    } catch (e) {
+      setOidMsg("网络错误: " + e.message, "err");
     }
   });
 }

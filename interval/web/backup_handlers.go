@@ -125,6 +125,9 @@ func (s *Server) handleBackupImport(w http.ResponseWriter, r *http.Request) {
 	if s.holidays != nil {
 		s.holidays.Reload()
 	}
+	if s.openids != nil {
+		s.openids.Reload()
+	}
 
 	// Credentials reload + session revocation: only when the user
 	// actually opted to restore creds (the file's been replaced) AND

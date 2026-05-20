@@ -42,6 +42,7 @@ import (
 	"github.com/xxl6097/argus-app/interval/store/history"
 	"github.com/xxl6097/argus-app/interval/store/holidays"
 	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/openid"
 	"github.com/xxl6097/argus-app/interval/store/override"
 	"github.com/xxl6097/argus-app/interval/store/settings"
 	"github.com/xxl6097/argus-app/interval/web"
@@ -83,6 +84,7 @@ func main() {
 	overridesPath := flag.String("overrides", "/etc/argus-app/overrides.json", "path to manual worktime overrides (per MAC per date); empty disables manual edits")
 	notifyPath := flag.String("notifications", "/etc/argus-app/notifications.json", "path to per-device webhook/ntfy configs; empty disables notifications tab")
 	credentialsPath := flag.String("credentials", "/etc/argus-app/credentials.json", "path to web UI admin credentials (bcrypt); empty disables the login gate (dev only)")
+	openidsPath := flag.String("openids", "/etc/argus-app/openids.json", "path to the OpenID whitelist for passwordless login; empty disables /api/login/openid")
 	holidaysPath := flag.String("holidays", "/etc/argus-app/holidays.json", "path to manual legal holiday / 调休 workday calendar; empty disables manual entries")
 	holidaysSystemPath := flag.String("holidays-system", "/etc/argus-app/holidays_system.json", "path to auto-fetched (timor.tech) holiday cache; empty disables auto-refresh")
 	holidaysYearsAhead := flag.Int("holidays-years", 10, "how many years ahead to fetch on each refresh (current year + N-1 future). The State Council typically publishes only the current year, so unpublished years silently no-op.")
@@ -208,6 +210,11 @@ func main() {
 				log.Printf("Web UI 登录已启用 (file=%s) — 首次启动: 用户 %q 密码 admin/admin, 登录后会强制修改", *credentialsPath, creds.Username())
 			} else {
 				log.Printf("Web UI 登录已启用 (file=%s, user=%s)", *credentialsPath, creds.Username())
+			}
+			if *openidsPath != "" {
+				oidStore := openid.New(*openidsPath)
+				opts = append(opts, web.WithOpenIDs(oidStore))
+				log.Printf("OpenID 免登录已启用 (file=%s, %d 条白名单)", *openidsPath, len(oidStore.All()))
 			}
 		} else {
 			log.Println("Web UI 登录已禁用 (-credentials=\"\") — 任何 LAN 用户都能访问仪表板")

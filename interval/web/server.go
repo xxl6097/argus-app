@@ -55,6 +55,7 @@ import (
 	"github.com/xxl6097/argus-app/interval/store/history"
 	"github.com/xxl6097/argus-app/interval/store/holidays"
 	"github.com/xxl6097/argus-app/interval/store/notify"
+	"github.com/xxl6097/argus-app/interval/store/openid"
 	"github.com/xxl6097/argus-app/interval/store/override"
 	"github.com/xxl6097/argus-app/interval/store/settings"
 	argus "github.com/xxl6097/argusd"
@@ -261,6 +262,18 @@ func WithNotifications(store *notify.Store, notifier *notify.Notifier) Option {
 	}
 }
 
+// WithOpenIDs attaches an OpenID whitelist store for passwordless
+// login. When set, /api/openids exposes the admin-managed list and
+// /api/login/openid lets a caller exchange a whitelisted openid for
+// an admin session cookie. Useful for WeChat / 二维码 flows where the
+// user already authenticated upstream.
+//
+// Requires WithCredentials too — the issued session piggybacks on
+// the admin user. nil = feature disabled.
+func WithOpenIDs(store *openid.Store) Option {
+	return func(s *Server) { s.openids = store }
+}
+
 // Server is an http.Handler that serves the argus dashboard + API.
 // Embed it in your own http.ServeMux or pass it directly to
 // http.ListenAndServe.
@@ -317,6 +330,10 @@ type Server struct {
 	// notifier dispatches events to those destinations.
 	notifyStore *notify.Store
 	notifier    *notify.Notifier
+
+	// openids is the OpenID whitelist for passwordless login. nil
+	// disables /api/openids and /api/login/openid.
+	openids *openid.Store
 
 	// writeAuth gates mutating APIs (POST/DELETE /api/aliases). nil
 	// means the default (currently a noop pass-through).
@@ -388,6 +405,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	// can actually reach the login form.
 	s.mux.HandleFunc("/login", s.handleLogin)
 	s.mux.HandleFunc("/api/login", s.handleAPILogin)
+	s.mux.HandleFunc("/api/login/openid", s.handleAPILoginOpenID)
 	s.mux.HandleFunc("/api/logout", s.handleAPILogout)
 	// Favicon stays public — it's pulled by the browser before any
 	// auth happens, and serving it 401 just produces console noise.
@@ -420,6 +438,7 @@ func NewServer(w *argus.Watcher, opts ...Option) *Server {
 	s.mux.HandleFunc("/api/notifications", gate(s.handleNotifications))
 	s.mux.HandleFunc("/api/notifications/messages", gate(s.handleNotificationMessages))
 	s.mux.HandleFunc("/api/notifications/test", gate(s.handleNotificationTest))
+	s.mux.HandleFunc("/api/openids", gate(s.handleOpenIDs))
 	s.mux.HandleFunc("/api/password", gate(s.handleAPIPassword))
 	s.mux.HandleFunc("/api/version", gate(s.handleVersion))
 	s.mux.HandleFunc("/api/version/check", gate(s.handleVersionCheck))

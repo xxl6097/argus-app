@@ -249,5 +249,6 @@ func (s *Server) capabilities() map[string]bool {
 		"settings":      s.settings != nil,
 		"holidays":      s.holidays != nil,
 		"notifications": s.notifyStore != nil,
+		"openids":       s.openids != nil && s.creds != nil,
 	}
 }
